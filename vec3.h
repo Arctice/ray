@@ -33,6 +33,8 @@ public:
               typename
               = typename std::enable_if<std::is_same<T1, double>::value>::type>
     vec3<double> normalized() const;
+
+    T dot(const vec3&) const;
 };
 
 using vec3f = vec3<double>;
@@ -44,6 +46,12 @@ vec3f vec3<T>::normalized() const
 {
     double r = sqrt(this->length2());
     return vec3f(x / r, y / r, z / r);
+}
+
+template <typename T>
+T vec3<T>::dot(const vec3& rhs) const
+{
+    return x * rhs.x + y * rhs.y + z * rhs.z;
 }
 
 template <typename T> vec3<T> vec3<T>::operator-(const vec3<T>& rhs) const

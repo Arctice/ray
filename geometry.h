@@ -65,7 +65,7 @@ template <typename T1, typename>
 vec2f vec2<T>::rotated(const double a) const
 {
     return {x * cos(a) - y * sin(a), x * sin(a) + y * cos(a)};
-};
+}
 
 template <typename T>
 vec2<T> vec2<T>::operator-(const vec2<T> &rhs) const
