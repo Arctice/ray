@@ -205,7 +205,7 @@ vec3<unsigned char> rgb_light(vec3f light)
 vec3f supersample(const camera& view, const vec2i& resolution,
                   const scene& objects, vec2i pixel)
 {
-    constexpr auto supersampling{8};
+    constexpr auto supersampling{16};
 
     vec3f color{};
 
@@ -219,6 +219,8 @@ vec3f supersample(const camera& view, const vec2i& resolution,
 
     return color * (1.0 / supersampling);
 }
+
+#include "lib/pool.hpp"
 
 void sfml_popup(camera view, scene scene)
 {
@@ -234,21 +236,29 @@ void sfml_popup(camera view, scene scene)
     auto t0 = std::chrono::high_resolution_clock::now();
 
     std::vector<unsigned char> out;
-    out.reserve(4 * resolution.y * resolution.x);
+    out.resize(4 * resolution.y * resolution.x);
+
+    thread_pool pool;
+    std::atomic_int done_count{};
 
     for (int y(0); y < resolution.y; ++y) {
-        for (int x(0); x < resolution.x; ++x) {
-            auto pixel = supersample(view, resolution, scene,
-                                     vec2i{x, y} - resolution * 0.5);
+        pool.enqueue_work([y, &done_count, &out, &view, &resolution, &scene]() {
+            for (int x(0); x < resolution.x; ++x) {
+                auto pixel = supersample(view, resolution, scene,
+                                         vec2i{x, y} - resolution * 0.5);
 
-            auto [r, g, b] = vec3<int>(rgb_light(pixel));
+                auto [r, g, b] = vec3<int>(rgb_light(pixel));
 
-            out.push_back(r);
-            out.push_back(g);
-            out.push_back(b);
-            out.push_back(255);
-        }
+                out[4 * (y * resolution.x + x)] = r;
+                out[4 * (y * resolution.x + x) + 1] = g;
+                out[4 * (y * resolution.x + x) + 2] = b;
+                out[4 * (y * resolution.x + x) + 3] = 255;
+            }
+            done_count++;
+        });
     }
+
+    while (done_count != resolution.y) {};
 
     std::cerr << (std::chrono::high_resolution_clock::now() - t0).count() /
                      1000000.
