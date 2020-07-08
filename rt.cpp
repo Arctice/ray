@@ -24,20 +24,25 @@ struct ray {
     vec3f origin, direction;
 };
 
+struct intersection;
+struct sphere;
+using object = std::variant<sphere>;
+using scene = std::vector<object>;
+
+using material = vec3f (*)(const ray&, const object&, const intersection&,
+                           const scene&);
+
+vec3f matte_diffuse(const ray&, const object&, const intersection&,
+                    const scene&);
+
 struct sphere {
     vec3f center;
     double radius;
     vec3f color{1, 1, 1};
+    material surface{matte_diffuse};
 };
 
-using object = std::variant<sphere>;
-
-using scene = std::vector<object>;
 vec3f trace(ray& view_ray, const scene& objects);
-
-struct intersection;
-using material = vec3f (*)(const ray&, const object&, const intersection&,
-                           const scene&);
 
 struct intersection {
     vec3f p;
@@ -49,8 +54,7 @@ vec3f random_direction()
 {
     while (true) {
         auto v = vec3f{drand48(), drand48(), drand48()} * 2 - vec3f{1, 1, 1};
-        if (v.length2() < 1)
-            return v;
+        if (v.length2() < 1) return v;
     }
 }
 
@@ -83,14 +87,14 @@ vec3f matte_diffuse(const ray& observer, const object& obj,
 vec3f glossy_diffuse(const ray& observer, const object& obj,
                      const intersection& intersection, const scene& objects)
 {
-    auto reflection =
-        reflect(observer.direction, intersection.surface_normal).normalized();
-    auto diffused =
-        intersection.p + intersection.surface_normal + random_direction();
+    auto reflection
+        = reflect(observer.direction, intersection.surface_normal).normalized();
+    auto diffused
+        = intersection.p + intersection.surface_normal + random_direction();
     auto diffusion = (diffused - intersection.p).normalized();
 
     auto gloss_ray = ray{intersection.p,
-                         (reflection * 0.85 + diffusion * 0.15).normalized()};
+                         (reflection * 0.75 + diffusion * 0.25).normalized()};
 
     return std::get<sphere>(obj).color * (trace(gloss_ray, objects) * 0.7);
 }
@@ -110,7 +114,7 @@ std::optional<intersection> intersect(const ray& r, const sphere& s)
 
     auto intersection_point = r.origin + r.direction * intersection_distance;
     auto surface_normal = (intersection_point - s.center).normalized();
-    return {{intersection_point, surface_normal, glossy_diffuse}};
+    return {{intersection_point, surface_normal, s.surface}};
 }
 
 std::optional<intersection> intersect(const ray& ray, const object& obj)
@@ -182,9 +186,15 @@ vec3f pixel_ray(camera view, vec2i resolution, vec2f pixel)
     return ray;
 }
 
+vec3f gamma_correction(vec3f light)
+{
+    return {std::sqrt(light.x), std::sqrt(light.y), std::sqrt(light.z)};
+}
+
 vec3<unsigned char> rgb_light(vec3f light)
 {
-    return vec3<unsigned char>(light * 255.);
+
+    return vec3<unsigned char>(gamma_correction(light) * 255.);
 }
 
 vec3f supersample(const camera& view, const vec2i& resolution,
@@ -215,11 +225,11 @@ void sfml_popup(camera view, scene scene)
     std::vector<unsigned char> out;
     out.resize(4 * resolution.y * resolution.x);
 
-    // thread_pool pool;
-    // std::atomic<int> done_count{};
+    thread_pool pool;
+    std::atomic<int> done_count{};
 
     for (int y(0); y < resolution.y; ++y) {
-        // pool.enqueue_work([y, &done_count, &out, &view, &resolution, &scene]() {
+        pool.enqueue_work([y, &done_count, &out, &view, &resolution, &scene]() {
             for (int x(0); x < resolution.x; ++x) {
                 auto pixel = supersample(view, resolution, scene,
                                          vec2i{x, y} - resolution * 0.5);
@@ -230,79 +240,78 @@ void sfml_popup(camera view, scene scene)
                 out[4 * (y * resolution.x + x) + 1] = g;
                 out[4 * (y * resolution.x + x) + 2] = b;
                 out[4 * (y * resolution.x + x) + 3] = 255;
-            }
-            // done_count++;
-        // });
+            }done_count++;
+            });
+        }
+
+        while (done_count != resolution.y) {};
+
+        std::cerr << (std::chrono::high_resolution_clock::now() - t0).count()
+                         / 1000000.
+                  << "ms\n";
+
+        sf::Image img;
+        img.create((unsigned int)(resolution.x), (unsigned int)(resolution.y),
+                   out.data());
+        img.saveToFile("out.png");
+
+        // sf::Texture texture;
+        // texture.create((unsigned int)resolution.x, (unsigned
+        // int)resolution.y); texture.update(out.data()); sf::Sprite
+        // view_sprite; view_sprite.setTexture(texture);
+        // view_sprite.setScale({scaling, scaling});
+
+        // sf::RenderWindow window{
+        //     sf::VideoMode{(unsigned int)(resolution.x * scaling),
+        //                   (unsigned int)(resolution.y * scaling)},
+        //     "ray"};
+        // window.setPosition({1800, 0});
+
+        // window.clear();
+        // window.draw(view_sprite);
+        // window.display();
+
+        // sf::Event event;
+        // while (window.isOpen()) {
+        //     while (window.pollEvent(event))
+        //         if (event.type == sf::Event::Closed)
+        //             window.close();
+        // }
     }
 
-    // while (done_count != resolution.y) {};
+    void output_colored(std::ostream & out, vec3<unsigned char> rgb,
+                        std::string s)
+    {
+        auto [r, g, b] = vec3<int>(rgb);
+        out << "\033[48;2;" << r / 2 << ";" << g / 2 << ";" << b / 2 << "m";
+        out << "\033[38;2;" << r << ";" << g << ";" << b << "m";
+        out << s;
+        out << "\033[m";
+        out << "\033[m";
+    }
 
-    std::cerr << (std::chrono::high_resolution_clock::now() - t0).count() /
-                     1000000.
-              << "ms\n";
+    void text_output(camera view, scene scene)
+    {
+        auto resolution = vec2i{152, 76};
 
-    sf::Image img;
-    img.create((unsigned int)(resolution.x),
-               (unsigned int)(resolution.y), out.data());
-    img.saveToFile("out.png");
+        std::ostringstream out;
 
-    // sf::Texture texture;
-    // texture.create((unsigned int)resolution.x, (unsigned int)resolution.y);
-    // texture.update(out.data());
-    // sf::Sprite view_sprite;
-    // view_sprite.setTexture(texture);
-    // view_sprite.setScale({scaling, scaling});
+        for (int y(0); y < resolution.y; ++y) {
+            for (int x(0); x < resolution.x; ++x) {
+                auto pixel = supersample(view, resolution, scene,
+                                         vec2i{x, y} - resolution * 0.5);
 
-    // sf::RenderWindow window{
-    //     sf::VideoMode{(unsigned int)(resolution.x * scaling),
-    //                   (unsigned int)(resolution.y * scaling)},
-    //     "ray"};
-    // window.setPosition({1800, 0});
-
-    // window.clear();
-    // window.draw(view_sprite);
-    // window.display();
-
-    // sf::Event event;
-    // while (window.isOpen()) {
-    //     while (window.pollEvent(event))
-    //         if (event.type == sf::Event::Closed)
-    //             window.close();
-    // }
-}
-
-void output_colored(std::ostream& out, vec3<unsigned char> rgb, std::string s)
-{
-    auto [r, g, b] = vec3<int>(rgb);
-    out << "\033[48;2;" << r / 2 << ";" << g / 2 << ";" << b / 2 << "m";
-    out << "\033[38;2;" << r << ";" << g << ";" << b << "m";
-    out << s;
-    out << "\033[m";
-    out << "\033[m";
-}
-
-void text_output(camera view, scene scene)
-{
-    auto resolution = vec2i{152, 76};
-
-    std::ostringstream out;
-
-    for (int y(0); y < resolution.y; ++y) {
-        for (int x(0); x < resolution.x; ++x) {
-            auto pixel = supersample(view, resolution, scene,
-                                     vec2i{x, y} - resolution * 0.5);
-
-            std::string c = " ";
-            if (pixel.length() >= 0.99)
-                c = "@";
-            else if (pixel.length() >= 0.75)
-                c = "%";
-            else if (pixel.length() >= 0.40)
-                c = "*";
-            else if (pixel.length() >= 0.10)
-                c = ":";
-            else if (pixel.length() > 0)
-                c = "·";
+                std::string c = " ";
+                if (pixel.length() >= 0.99)
+                    c = "@";
+                else if (pixel.length() >= 0.75)
+                    c = "%";
+                else if (pixel.length() >= 0.40)
+                    c = "*";
+                else if (pixel.length() >= 0.10)
+                    c = ":";
+                else if (pixel.length() > 0)
+                    c = "·";
 
             output_colored(out, rgb_light(pixel), c);
         }
@@ -315,13 +324,13 @@ void text_output(camera view, scene scene)
 
 int main()
 {
-    auto view = camera{{1, 5, 0}, vec3f{-0.1, -0.1, 1}.normalized(), 35};
+    auto view = camera{{1, 5, 0}, vec3f{-0.1, -0.1, 1}.normalized(), 30};
 
     auto objects = scene{
-        {sphere{{-5, -4.5, 30}, 1, {0.6, 1, 0.8}}},
-        {sphere{{3, -3.25, 40}, 2.5, {1, 0.2, 0.2}}},
-        {sphere{{-1, 2, 60}, 8, {1, 0.70, 0.25}}},
-        {sphere{{-8, 6, 45}, 1, {1, 1, 1}}},
+        {sphere{{-5, -4.5, 30}, 1, {0.6, 1, 0.8}, mirror_diffuse}},
+        {sphere{{3, -3.25, 40}, 2.5, {1, 0.2, 0.2}, mirror_diffuse}},
+        {sphere{{-1, 2, 60}, 8, {1, 0.70, 0.25}, glossy_diffuse}},
+        {sphere{{-8, 6, 45}, 1, {1, 1, 1}, matte_diffuse}},
         {sphere{{0, -1000000006., 0}, 1000000000.}},
     };
 

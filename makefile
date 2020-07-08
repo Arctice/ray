@@ -1,5 +1,5 @@
 core:
-	clang++ -std=c++17 -O3 -march=native \
+	clang++ -std=c++17 -Ofast -march=native \
 	-Wall -Wpedantic \
 	rt.cpp -o rt \
 	-pthread -latomic \
