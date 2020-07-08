@@ -22,6 +22,7 @@ struct camera {
 
 struct ray {
     vec3f origin, direction;
+    std::uint8_t depth;
 };
 
 struct intersection;
@@ -63,14 +64,20 @@ vec3f reflect(const vec3f& v, const vec3f& normal)
     return v - normal * 2.0 * v.dot(normal);
 }
 
+vec3f light_source(const ray& observer, const object& obj,
+                  const intersection& intersection, const scene& objects)
+{
+    return std::get<sphere>(obj).color;
+}
+
 vec3f mirror_diffuse(const ray& observer, const object& obj,
                      const intersection& intersection, const scene& objects)
 {
     auto reflection =
         reflect(observer.direction, intersection.surface_normal).normalized();
-    auto reflected_ray = ray{intersection.p, reflection};
+    auto reflected_ray = ray{intersection.p, reflection, observer.depth};
 
-    return std::get<sphere>(obj).color * (trace(reflected_ray, objects) * 0.7);
+    return std::get<sphere>(obj).color * trace(reflected_ray, objects);
 }
 
 vec3f matte_diffuse(const ray& observer, const object& obj,
@@ -79,7 +86,7 @@ vec3f matte_diffuse(const ray& observer, const object& obj,
     auto new_direction =
         intersection.p + intersection.surface_normal + random_direction();
     auto normal = (new_direction - intersection.p).normalized();
-    auto diffuse_ray = ray{intersection.p, normal};
+    auto diffuse_ray = ray{intersection.p, normal, observer.depth};
 
     return std::get<sphere>(obj).color * (trace(diffuse_ray, objects) * 0.5);
 }
@@ -94,7 +101,8 @@ vec3f glossy_diffuse(const ray& observer, const object& obj,
     auto diffusion = (diffused - intersection.p).normalized();
 
     auto gloss_ray = ray{intersection.p,
-                         (reflection * 0.75 + diffusion * 0.25).normalized()};
+                         (reflection * 0.75 + diffusion * 0.25).normalized(),
+                         observer.depth};
 
     return std::get<sphere>(obj).color * (trace(gloss_ray, objects) * 0.7);
 }
@@ -130,8 +138,10 @@ vec3f diffuse(const ray& observer, const object& obj,
 
 vec3f trace(ray& view_ray, const scene& objects)
 {
-    auto light = vec3f{-15, 8, 35};
-    auto view_color = vec3f{.9, .95, 1};
+    auto view_color = vec3f{};
+    if (view_ray.depth > 128) return view_color;
+    view_ray.depth++;
+
     auto nearest = std::numeric_limits<double>::max();
 
     for (const auto& obj : objects) {
@@ -200,7 +210,7 @@ vec3<unsigned char> rgb_light(vec3f light)
 vec3f supersample(const camera& view, const vec2i& resolution,
                   const scene& objects, vec2i pixel)
 {
-    constexpr auto supersampling{32};
+    constexpr auto supersampling{12};
 
     vec3f color{};
 
@@ -217,7 +227,7 @@ vec3f supersample(const camera& view, const vec2i& resolution,
 
 void sfml_popup(camera view, scene scene)
 {
-    auto resolution = vec2i{400, 400};
+    auto resolution = vec2i{800, 800};
     // float scaling = 1;
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -324,14 +334,20 @@ void sfml_popup(camera view, scene scene)
 
 int main()
 {
-    auto view = camera{{1, 5, 0}, vec3f{-0.1, -0.1, 1}.normalized(), 30};
+    // auto view = camera{{1, 5, 0}, vec3f{0.5918782901, -8.91237850058, 40}.normalized(), 0.000000001};
+    auto view = camera{{1, 5, 0}, vec3f{-0.1, -0.1, 1}.normalized(), 34};
 
     auto objects = scene{
-        {sphere{{-5, -4.5, 30}, 1, {0.6, 1, 0.8}, mirror_diffuse}},
-        {sphere{{3, -3.25, 40}, 2.5, {1, 0.2, 0.2}, mirror_diffuse}},
+        {sphere{{-6, -5, 35}, 1, {0.6, 1, 0.8}, mirror_diffuse}},
+        {sphere{{3, -3.5, 40}, 2.5, {1, 0.2, 0.2}, mirror_diffuse}},
         {sphere{{-1, 2, 60}, 8, {1, 0.70, 0.25}, glossy_diffuse}},
         {sphere{{-8, 6, 45}, 1, {1, 1, 1}, matte_diffuse}},
-        {sphere{{0, -1000000006., 0}, 1000000000.}},
+        {sphere{{-3, -5.5, 42}, .2, {1, 1, 1}, light_source}},
+        {sphere{{0, -1000000006., 0},
+                1000000000.,
+                {.85, .85, .95},
+                glossy_diffuse}},
+        {sphere{{0, 1000000000., 0}, 999999900., {.9, .95, 1}, light_source}},
     };
 
     // text_output(view, objects);
