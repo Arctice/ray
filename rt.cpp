@@ -31,7 +31,7 @@ struct sphere {
 using object = std::variant<sphere>;
 
 using scene = std::vector<object>;
-vec3f trace(const ray& view_ray, const scene& objects);
+vec3f trace(ray& view_ray, const scene& objects);
 
 struct intersection;
 using material = vec3f (*)(const ray&, const object&, const intersection&,
@@ -67,7 +67,7 @@ vec3f mirror_diffuse(const ray& observer, const object& obj,
     return std::get<sphere>(obj).color * (trace(reflected_ray, objects) * 0.7);
 }
 
-vec3f matte_diffuse(const ray&, const object& obj,
+vec3f matte_diffuse(const ray& observer, const object& obj,
                     const intersection& intersection, const scene& objects)
 {
     auto new_direction =
@@ -96,25 +96,20 @@ vec3f glossy_diffuse(const ray& observer, const object& obj,
 std::optional<intersection> intersect(const ray& r, const sphere& s)
 {
     auto to_sphere = (s.center - r.origin);
-    auto s_dir = to_sphere.normalized();
-    auto angle_opposite = (s_dir - r.direction).length() / 2;
-    auto sin = angle_opposite / s_dir.length();
-    auto angle = 2. * std::asin(sin);
+    auto projection = r.direction.dot(to_sphere);
+    auto cast = r.direction * projection;
+    auto closest_to_sphere_sq = (to_sphere - cast).length2();
+    auto r2 = s.radius*s.radius;
+    if (projection < 0 or closest_to_sphere_sq >= r2) return {};
 
-    auto cast = std::sin(angle) * to_sphere.length();
-    if (cast < s.radius) {
-        auto closest_point_d = std::cos(angle) * to_sphere.length();
-        auto intersection_depth =
-            std::sin(std::acos(cast / s.radius)) * s.radius;
-        auto intersection_distance = closest_point_d - intersection_depth;
+    auto intersection_depth = std::sqrt(r2 - closest_to_sphere_sq);
+    auto intersection_distance = projection - intersection_depth;
+    auto intersection_point = r.origin + r.direction * intersection_distance;
 
-        auto intersection_point =
-            r.origin + r.direction * intersection_distance;
-        auto surface_normal = (intersection_point - s.center).normalized();
+    auto surface_normal = (intersection_point - s.center).normalized();
 
-        if (intersection_distance > 0)
-            return {{intersection_point, surface_normal, glossy_diffuse}};
-    }
+    if (intersection_distance > 0)
+        return {{intersection_point, surface_normal, glossy_diffuse}};
     return {};
 }
 
@@ -129,7 +124,7 @@ vec3f diffuse(const ray& observer, const object& obj,
     return intersection.mat(observer, obj, intersection, objects);
 }
 
-vec3f trace(const ray& view_ray, const scene& objects)
+vec3f trace(ray& view_ray, const scene& objects)
 {
     auto light = vec3f{-15, 8, 35};
     auto view_color = vec3f{.9, .95, 1};
@@ -205,7 +200,7 @@ vec3<unsigned char> rgb_light(vec3f light)
 vec3f supersample(const camera& view, const vec2i& resolution,
                   const scene& objects, vec2i pixel)
 {
-    constexpr auto supersampling{16};
+    constexpr auto supersampling{40};
 
     vec3f color{};
 
@@ -220,29 +215,23 @@ vec3f supersample(const camera& view, const vec2i& resolution,
     return color * (1.0 / supersampling);
 }
 
-#include "lib/pool.hpp"
+// #include "lib/pool.hpp"
 
 void sfml_popup(camera view, scene scene)
 {
     auto resolution = vec2i{400, 400};
-    float upscaling = 2.5;
-    sf::RenderWindow window{
-        sf::VideoMode{(unsigned int)(resolution.x * upscaling),
-                      (unsigned int)(resolution.y * upscaling)},
-        "ray"};
-    window.setPosition({1800, 0});
-    sf::Event event;
+    // float scaling = 1;
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
     std::vector<unsigned char> out;
     out.resize(4 * resolution.y * resolution.x);
 
-    thread_pool pool;
-    std::atomic_int done_count{};
+    // thread_pool pool;
+    // std::atomic<int> done_count{};
 
     for (int y(0); y < resolution.y; ++y) {
-        pool.enqueue_work([y, &done_count, &out, &view, &resolution, &scene]() {
+        // pool.enqueue_work([y, &done_count, &out, &view, &resolution, &scene]() {
             for (int x(0); x < resolution.x; ++x) {
                 auto pixel = supersample(view, resolution, scene,
                                          vec2i{x, y} - resolution * 0.5);
@@ -254,31 +243,44 @@ void sfml_popup(camera view, scene scene)
                 out[4 * (y * resolution.x + x) + 2] = b;
                 out[4 * (y * resolution.x + x) + 3] = 255;
             }
-            done_count++;
-        });
+            // done_count++;
+        // });
     }
 
-    while (done_count != resolution.y) {};
+    // while (done_count != resolution.y) {};
 
     std::cerr << (std::chrono::high_resolution_clock::now() - t0).count() /
                      1000000.
               << "ms\n";
 
-    sf::Texture texture;
-    texture.create((unsigned int)resolution.x, (unsigned int)resolution.y);
-    texture.update(out.data());
-    sf::Sprite view_sprite;
-    view_sprite.setTexture(texture);
-    view_sprite.setScale({upscaling, upscaling});
-    window.clear();
-    window.draw(view_sprite);
-    window.display();
+    sf::Image img;
+    img.create((unsigned int)(resolution.x),
+               (unsigned int)(resolution.y), out.data());
+    img.saveToFile("out.png");
 
-    while (window.isOpen()) {
-        while (window.pollEvent(event))
-            if (event.type == sf::Event::Closed)
-                window.close();
-    }
+    // sf::Texture texture;
+    // texture.create((unsigned int)resolution.x, (unsigned int)resolution.y);
+    // texture.update(out.data());
+    // sf::Sprite view_sprite;
+    // view_sprite.setTexture(texture);
+    // view_sprite.setScale({scaling, scaling});
+
+    // sf::RenderWindow window{
+    //     sf::VideoMode{(unsigned int)(resolution.x * scaling),
+    //                   (unsigned int)(resolution.y * scaling)},
+    //     "ray"};
+    // window.setPosition({1800, 0});
+
+    // window.clear();
+    // window.draw(view_sprite);
+    // window.display();
+
+    // sf::Event event;
+    // while (window.isOpen()) {
+    //     while (window.pollEvent(event))
+    //         if (event.type == sf::Event::Closed)
+    //             window.close();
+    // }
 }
 
 void output_colored(std::ostream& out, vec3<unsigned char> rgb, std::string s)
