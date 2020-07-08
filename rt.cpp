@@ -12,6 +12,8 @@
 #include <SFML/Window.hpp>
 #include <SFML/Graphics.hpp>
 
+#include "lib/pool.hpp"
+
 struct camera {
     vec3f origin;
     vec3f direction;
@@ -95,22 +97,20 @@ vec3f glossy_diffuse(const ray& observer, const object& obj,
 
 std::optional<intersection> intersect(const ray& r, const sphere& s)
 {
+    auto r2 = s.radius * s.radius;
     auto to_sphere = (s.center - r.origin);
     auto projection = r.direction.dot(to_sphere);
     auto cast = r.direction * projection;
     auto closest_to_sphere_sq = (to_sphere - cast).length2();
-    auto r2 = s.radius*s.radius;
     if (projection < 0 or closest_to_sphere_sq >= r2) return {};
 
     auto intersection_depth = std::sqrt(r2 - closest_to_sphere_sq);
     auto intersection_distance = projection - intersection_depth;
+    if (intersection_distance < 0) return {};
+
     auto intersection_point = r.origin + r.direction * intersection_distance;
-
     auto surface_normal = (intersection_point - s.center).normalized();
-
-    if (intersection_distance > 0)
-        return {{intersection_point, surface_normal, glossy_diffuse}};
-    return {};
+    return {{intersection_point, surface_normal, glossy_diffuse}};
 }
 
 std::optional<intersection> intersect(const ray& ray, const object& obj)
@@ -146,16 +146,6 @@ vec3f trace(ray& view_ray, const scene& objects)
 
     return view_color;
 }
-
-// auto shadow_ray =
-//     ray{*intersection, (light - *intersection).normalized()};
-
-// for (const auto &other : objects) {
-//     if (&other == &sphere)
-//         continue;
-//     if (intersect(shadow_ray, other))
-//         color *= 0.1;
-// }
 
 vec3f pixel_ray(camera view, vec2i resolution, vec2f pixel)
 {
@@ -200,7 +190,7 @@ vec3<unsigned char> rgb_light(vec3f light)
 vec3f supersample(const camera& view, const vec2i& resolution,
                   const scene& objects, vec2i pixel)
 {
-    constexpr auto supersampling{40};
+    constexpr auto supersampling{32};
 
     vec3f color{};
 
@@ -214,8 +204,6 @@ vec3f supersample(const camera& view, const vec2i& resolution,
 
     return color * (1.0 / supersampling);
 }
-
-// #include "lib/pool.hpp"
 
 void sfml_popup(camera view, scene scene)
 {
@@ -340,3 +328,30 @@ int main()
     // text_output(view, objects);
     sfml_popup(view, objects);
 }
+
+// std::optional<intersection> intersect(const ray& r, const sphere& s)
+// {
+//     // R t = o + v*t;
+//     // (x - sx)² + (y - sy)² + (z - sz)² = r²;
+//     // b = o - s;
+//     // (bx + vx*t)² + (...) - r2 = 0;
+//     // (bx² + by² + bz² - r2)
+//     //    + 2t(bx·vx + by·vy + bz·vz)
+//     //    + (vx²t² + vy²t² + vz²t²);
+//     // t²(v·v) + 2t(b·v) + (b·b) - r² = 0
+//     auto r2 = s.radius * s.radius;
+//     auto v = r.direction;
+//     auto b = r.origin - s.center;
+//     // At² + Bt + C = 0
+//     auto A = v.dot(v);
+//     auto B = 2 * b.dot(v);
+//     auto C = b.dot(b) - r2;
+//     auto q = B * B - 4 * A * C;
+//     if (q < 0) return {};
+//     q = std::sqrt(q);
+//     auto t = (-B - q) / 2 * A;
+//     if (t < 0) return {};
+//     auto intersection_point = r.origin + r.direction * t;
+//     auto surface_normal = (intersection_point - s.center).normalized();
+//     return {{intersection_point, surface_normal, s.surface}};
+// }
