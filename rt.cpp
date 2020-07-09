@@ -88,7 +88,13 @@ vec3f matte_diffuse(const ray& observer, const object& obj,
     auto normal = (new_direction - intersection.p).normalized();
     auto diffuse_ray = ray{intersection.p, normal, observer.depth};
 
-    return std::get<sphere>(obj).color * (trace(diffuse_ray, objects) * 0.5);
+    auto reflectivity{0.60};
+    auto transferance = std::get<sphere>(obj).color * 2.0 * reflectivity
+                        * std::max(0., intersection.surface_normal.dot(normal));
+
+    return trace(diffuse_ray, objects) * transferance;
+
+    // return std::get<sphere>(obj).color * (trace(diffuse_ray, objects) * 0.5);
 }
 
 vec3f glossy_diffuse(const ray& observer, const object& obj,
@@ -100,9 +106,8 @@ vec3f glossy_diffuse(const ray& observer, const object& obj,
         = intersection.p + intersection.surface_normal + random_direction();
     auto diffusion = (diffused - intersection.p).normalized();
 
-    auto gloss_ray = ray{intersection.p,
-                         (reflection * 0.75 + diffusion * 0.25).normalized(),
-                         observer.depth};
+    auto normal = (reflection * 0.75 + diffusion * 0.25).normalized();
+    auto gloss_ray = ray{intersection.p, normal, observer.depth};
 
     return std::get<sphere>(obj).color * (trace(gloss_ray, objects) * 0.7);
 }
