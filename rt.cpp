@@ -14,6 +14,8 @@
 
 #include "lib/pool.hpp"
 
+const vec3f black = vec3f{};
+
 struct camera {
     vec3f origin;
     vec3f direction;
@@ -25,9 +27,14 @@ struct ray {
     std::uint8_t depth;
 };
 
+struct point_light{
+    vec3f position;
+    vec3f intensity;
+};
+
 struct intersection;
 struct sphere;
-using object = std::variant<sphere>;
+using object = std::variant<sphere, point_light>;
 using scene = std::vector<object>;
 
 using material = vec3f (*)(const ray&, const object&, const intersection&,
@@ -83,16 +90,18 @@ vec3f mirror_diffuse(const ray& observer, const object& obj,
 vec3f matte_diffuse(const ray& observer, const object& obj,
                     const intersection& intersection, const scene& objects)
 {
-    auto new_direction =
-        intersection.p + intersection.surface_normal + random_direction();
-    auto normal = (new_direction - intersection.p).normalized();
-    auto diffuse_ray = ray{intersection.p, normal, observer.depth};
+    // auto new_direction =
+    //     intersection.p + intersection.surface_normal + random_direction();
+    // auto normal = (new_direction - intersection.p).normalized();
+    // auto diffuse_ray = ray{intersection.p, normal, observer.depth};
 
-    auto reflectivity{0.60};
-    auto transferance = std::get<sphere>(obj).color * 2.0 * reflectivity
-                        * std::max(0., intersection.surface_normal.dot(normal));
+    // auto reflectivity{0.60};
+    // auto transferance = std::get<sphere>(obj).color * 2.0 * reflectivity
+    //                     * std::max(0., intersection.surface_normal.dot(normal));
 
-    return trace(diffuse_ray, objects) * transferance;
+    // return trace(diffuse_ray, objects) * transferance;
+
+    return std::get<sphere>(obj).color * (1. / pi);
 
     // return std::get<sphere>(obj).color * (trace(diffuse_ray, objects) * 0.5);
 }
@@ -112,6 +121,11 @@ vec3f glossy_diffuse(const ray& observer, const object& obj,
     return std::get<sphere>(obj).color * (trace(gloss_ray, objects) * 0.7);
 }
 
+std::optional<intersection> intersect(const ray&, const point_light&)
+{
+    return {};
+}
+
 std::optional<intersection> intersect(const ray& r, const sphere& s)
 {
     auto r2 = s.radius * s.radius;
@@ -123,7 +137,7 @@ std::optional<intersection> intersect(const ray& r, const sphere& s)
 
     auto intersection_depth = std::sqrt(r2 - closest_to_sphere_sq);
     auto intersection_distance = projection - intersection_depth;
-    if (intersection_distance < 0) return {};
+    if (intersection_distance < -10e-10) return {};
 
     auto intersection_point = r.origin + r.direction * intersection_distance;
     auto surface_normal = (intersection_point - s.center).normalized();
@@ -141,29 +155,95 @@ vec3f diffuse(const ray& observer, const object& obj,
     return intersection.mat(observer, obj, intersection, objects);
 }
 
-vec3f trace(ray& view_ray, const scene& objects)
+std::optional<std::pair<const object&, intersection>>
+intersect(ray& ray, const scene& objects)
 {
-    auto view_color = vec3f{};
-    if (view_ray.depth > 128) return view_color;
-    view_ray.depth++;
+    if (ray.depth > 32) return {};
+    ray.depth++;
 
     auto nearest = std::numeric_limits<double>::max();
+    std::optional<intersection> result{};
+    const object* intersected_object{};
 
     for (const auto& obj : objects) {
-        auto intersection = intersect(view_ray, obj);
-        if (not intersection)
-            continue;
+        auto intersection = intersect(ray, obj);
+        if (not intersection) continue;
 
-        auto distance = (intersection->p - view_ray.origin).length();
-        if (nearest <= distance)
-            continue;
+        auto distance = (intersection->p - ray.origin).length();
+        if (nearest <= distance) continue;
+
         nearest = distance;
-
-        auto color = diffuse(view_ray, obj, *intersection, objects);
-        view_color = color;
+        result = {intersection};
+        intersected_object = &obj;
     }
 
-    return view_color;
+    if (result)
+        return {std::pair<const object&, intersection>{*intersected_object,
+                                                       *result}};
+    else
+        return {};
+}
+
+vec3f direct_lighting(const intersection& p, const scene& objects)
+{
+    // select one light
+    auto light_count{0};
+    for (auto& obj : objects) {
+        light_count += std::visit(
+            [](auto& obj) {
+                return std::is_same_v<decltype(obj), const point_light&>;
+            },
+            obj);
+    }
+    if (light_count == 0) return black;
+
+    light_count = int(float(light_count) * drand48()) + 1;
+
+    const object* one_light;
+    for (auto& obj : objects) {
+        light_count -= std::visit(
+            [](auto& obj) {
+                return std::is_same_v<decltype(obj), const point_light&>;
+            },
+            obj);
+        if (light_count <= 0) {
+            one_light = &obj;
+            break;
+        }
+    }
+
+    auto light_source = std::get<point_light>(*one_light);
+    
+    // cast shadow ray
+    auto towards_light = light_source.position - p.p;
+    auto shadow_ray = ray{p.p, towards_light.normalized()};
+
+    // check visibility
+    auto visibility = intersect(shadow_ray, objects);
+    if (visibility) {
+        auto& [_, intersection] = *visibility;
+        auto intersection_distance = (intersection.p - p.p).length2();
+        if (intersection_distance < towards_light.length2()) return black;
+    }
+
+    // return incident light contribution
+    auto L = light_source.intensity * (1. / towards_light.length2());
+
+    L *= p.surface_normal.dot(shadow_ray.direction);
+
+    return L;
+}
+
+vec3f trace(ray& view_ray, const scene& scene)
+{
+    auto found_intersection = intersect(view_ray, scene);
+    if (not found_intersection) return black;
+
+    auto& [obj, intersection] = *found_intersection;
+
+    auto light = direct_lighting(intersection, scene);
+
+    return light * diffuse(view_ray, obj, intersection, scene);
 }
 
 vec3f pixel_ray(camera view, vec2i resolution, vec2f pixel)
@@ -208,14 +288,15 @@ vec3f gamma_correction(vec3f light)
 
 vec3<unsigned char> rgb_light(vec3f light)
 {
-
+    auto clamp = [](auto c) { return std::min(1., std::max(0., c)); };
+    light = {clamp(light.x), clamp(light.y), clamp(light.z)};
     return vec3<unsigned char>(gamma_correction(light) * 255.);
 }
 
 vec3f supersample(const camera& view, const vec2i& resolution,
                   const scene& objects, vec2i pixel)
 {
-    constexpr auto supersampling{12};
+    constexpr auto supersampling{8};
 
     vec3f color{};
 
@@ -255,78 +336,78 @@ void sfml_popup(camera view, scene scene)
                 out[4 * (y * resolution.x + x) + 1] = g;
                 out[4 * (y * resolution.x + x) + 2] = b;
                 out[4 * (y * resolution.x + x) + 3] = 255;
-            }done_count++;
-            });
-        }
-
-        while (done_count != resolution.y) {};
-
-        std::cerr << (std::chrono::high_resolution_clock::now() - t0).count()
-                         / 1000000.
-                  << "ms\n";
-
-        sf::Image img;
-        img.create((unsigned int)(resolution.x), (unsigned int)(resolution.y),
-                   out.data());
-        img.saveToFile("out.png");
-
-        // sf::Texture texture;
-        // texture.create((unsigned int)resolution.x, (unsigned
-        // int)resolution.y); texture.update(out.data()); sf::Sprite
-        // view_sprite; view_sprite.setTexture(texture);
-        // view_sprite.setScale({scaling, scaling});
-
-        // sf::RenderWindow window{
-        //     sf::VideoMode{(unsigned int)(resolution.x * scaling),
-        //                   (unsigned int)(resolution.y * scaling)},
-        //     "ray"};
-        // window.setPosition({1800, 0});
-
-        // window.clear();
-        // window.draw(view_sprite);
-        // window.display();
-
-        // sf::Event event;
-        // while (window.isOpen()) {
-        //     while (window.pollEvent(event))
-        //         if (event.type == sf::Event::Closed)
-        //             window.close();
-        // }
+            }
+            done_count++;
+        });
     }
 
-    void output_colored(std::ostream & out, vec3<unsigned char> rgb,
-                        std::string s)
-    {
-        auto [r, g, b] = vec3<int>(rgb);
-        out << "\033[48;2;" << r / 2 << ";" << g / 2 << ";" << b / 2 << "m";
-        out << "\033[38;2;" << r << ";" << g << ";" << b << "m";
-        out << s;
-        out << "\033[m";
-        out << "\033[m";
-    }
+    while (done_count != resolution.y) {};
 
-    void text_output(camera view, scene scene)
-    {
-        auto resolution = vec2i{152, 76};
+    std::cerr << (std::chrono::high_resolution_clock::now() - t0).count()
+                     / 1000000.
+              << "ms\n";
 
-        std::ostringstream out;
+    sf::Image img;
+    img.create((unsigned int)(resolution.x), (unsigned int)(resolution.y),
+               out.data());
+    img.saveToFile("out.png");
 
-        for (int y(0); y < resolution.y; ++y) {
-            for (int x(0); x < resolution.x; ++x) {
-                auto pixel = supersample(view, resolution, scene,
-                                         vec2i{x, y} - resolution * 0.5);
+    // sf::Texture texture;
+    // texture.create((unsigned int)resolution.x, (unsigned
+    // int)resolution.y); texture.update(out.data()); sf::Sprite
+    // view_sprite; view_sprite.setTexture(texture);
+    // view_sprite.setScale({scaling, scaling});
 
-                std::string c = " ";
-                if (pixel.length() >= 0.99)
-                    c = "@";
-                else if (pixel.length() >= 0.75)
-                    c = "%";
-                else if (pixel.length() >= 0.40)
-                    c = "*";
-                else if (pixel.length() >= 0.10)
-                    c = ":";
-                else if (pixel.length() > 0)
-                    c = "·";
+    // sf::RenderWindow window{
+    //     sf::VideoMode{(unsigned int)(resolution.x * scaling),
+    //                   (unsigned int)(resolution.y * scaling)},
+    //     "ray"};
+    // window.setPosition({1800, 0});
+
+    // window.clear();
+    // window.draw(view_sprite);
+    // window.display();
+
+    // sf::Event event;
+    // while (window.isOpen()) {
+    //     while (window.pollEvent(event))
+    //         if (event.type == sf::Event::Closed)
+    //             window.close();
+    // }
+}
+
+void output_colored(std::ostream& out, vec3<unsigned char> rgb, std::string s)
+{
+    auto [r, g, b] = vec3<int>(rgb);
+    out << "\033[48;2;" << r / 2 << ";" << g / 2 << ";" << b / 2 << "m";
+    out << "\033[38;2;" << r << ";" << g << ";" << b << "m";
+    out << s;
+    out << "\033[m";
+    out << "\033[m";
+}
+
+void text_output(camera view, scene scene)
+{
+    auto resolution = vec2i{152, 76};
+
+    std::ostringstream out;
+
+    for (int y(0); y < resolution.y; ++y) {
+        for (int x(0); x < resolution.x; ++x) {
+            auto pixel = supersample(view, resolution, scene,
+                                     vec2i{x, y} - resolution * 0.5);
+
+            std::string c = " ";
+            if (pixel.length() >= 0.99)
+                c = "@";
+            else if (pixel.length() >= 0.75)
+                c = "%";
+            else if (pixel.length() >= 0.40)
+                c = "*";
+            else if (pixel.length() >= 0.10)
+                c = ":";
+            else if (pixel.length() > 0)
+                c = "·";
 
             output_colored(out, rgb_light(pixel), c);
         }
@@ -340,19 +421,21 @@ void sfml_popup(camera view, scene scene)
 int main()
 {
     // auto view = camera{{1, 5, 0}, vec3f{0.5918782901, -8.91237850058, 40}.normalized(), 0.000000001};
-    auto view = camera{{1, 5, 0}, vec3f{-0.1, -0.1, 1}.normalized(), 34};
+    auto view = camera{{1, 5, 0}, vec3f{-0.1, -0.1, 1}.normalized(), 30};
 
     auto objects = scene{
-        {sphere{{-6, -5, 35}, 1, {0.6, 1, 0.8}, mirror_diffuse}},
-        {sphere{{3, -3.5, 40}, 2.5, {1, 0.2, 0.2}, mirror_diffuse}},
-        {sphere{{-1, 2, 60}, 8, {1, 0.70, 0.25}, glossy_diffuse}},
+        {sphere{{-6, -5, 35}, 1, {0.6, 1, 0.8}, matte_diffuse}},
+        {sphere{{3, -3.5, 40}, 2.5, {1, 0.2, 0.2}, matte_diffuse}},
+        {sphere{{-1, 2, 60}, 8, {1, 0.70, 0.25}, matte_diffuse}},
         {sphere{{-8, 6, 45}, 1, {1, 1, 1}, matte_diffuse}},
-        {sphere{{-3, -5.5, 42}, .2, {1, 1, 1}, light_source}},
-        {sphere{{0, -1000000006., 0},
-                1000000000.,
-                {.85, .85, .95},
-                glossy_diffuse}},
-        {sphere{{0, 1000000000., 0}, 999999900., {.9, .95, 1}, light_source}},
+        {sphere{
+            {0, -1000000006., 0}, 1000000000., {.85, .85, .95}, matte_diffuse}},
+        // {sphere{{0, 1000000000., 0}, 999999900., {.9, .95, 1},
+        // light_source}},
+
+        {point_light{{-4, -4, 45}, {50., 50., 200.}}},
+        {point_light{{4, 6, 25}, {300., 50., 50.}}},
+        {point_light{{0,500,0}, {100000., 100000., 100000.}}},
     };
 
     // text_output(view, objects);
