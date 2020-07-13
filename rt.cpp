@@ -37,21 +37,31 @@ struct sphere;
 using object = std::variant<sphere, point_light>;
 using scene = std::vector<object>;
 
-using material = vec3f (*)(const vec3f&, const vec3f&, const object&, const intersection&);
+struct reflection_sample{
+    ray reflected;
+    vec3f light_transfer;
+};
 
-vec3f matte_reflect(const vec3f&, const vec3f&, const object&, const intersection&);
+struct material {
+    vec3f (*reflect)(const vec3f&, const vec3f&, const object&,
+                     const intersection&);
+    reflection_sample (*scatter)(const vec3f&, const object&,
+                                 const intersection&);
+};
+
+extern material matte;
 
 struct sphere {
     vec3f center;
     double radius;
     vec3f color{1, 1, 1};
-    material surface{matte_reflect};
+    material* surface{&matte};
 };
 
 struct intersection {
     vec3f p;
     vec3f surface_normal;
-    material mat;
+    material* material;
 };
 
 vec3f random_direction()
@@ -67,18 +77,13 @@ vec3f reflect(const vec3f& v, const vec3f& normal)
     return v - normal * 2.0 * v.dot(normal);
 }
 
-struct reflection_sample{
-    ray reflected;
-    vec3f light_transfer;
-};
-
 vec3f matte_reflect(const vec3f& view, const vec3f& light, const object& obj,
                     const intersection& intersection)
 {
     return std::get<sphere>(obj).color;
 }
 
-reflection_sample matte_bounce(const vec3f& view, const object& obj,
+reflection_sample matte_scatter(const vec3f& view, const object& obj,
                                const intersection& intersection)
 {
     auto new_direction =
@@ -94,7 +99,7 @@ vec3f mirror_reflect(const vec3f& view, const vec3f& light, const object& obj,
     return {};
 }
 
-reflection_sample mirror_bounce(const vec3f& view, const object& obj,
+reflection_sample mirror_scatter(const vec3f& view, const object& obj,
                                 const intersection& intersection)
 {
     auto reflection = reflect(view, intersection.surface_normal).normalized();
@@ -102,6 +107,9 @@ reflection_sample mirror_bounce(const vec3f& view, const object& obj,
 
     return {reflected_ray, std::get<sphere>(obj).color};
 }
+
+material matte{matte_reflect, matte_scatter};
+material mirror{mirror_reflect, mirror_scatter};
 
 // vec3f glossy_reflect(const vec3f& observer, const object& obj,
 //                      const intersection& intersection, const scene& objects)
@@ -121,7 +129,7 @@ reflection_sample mirror_bounce(const vec3f& view, const object& obj,
 vec3f surface_reflect(const vec3f& view, const vec3f& light, const object& obj,
                       const intersection& intersection)
 {
-    return intersection.mat(view, light, obj, intersection);
+    return intersection.material->reflect(view, light, obj, intersection);
 }
 
 std::optional<intersection> intersect(const ray&, const point_light&)
@@ -255,9 +263,9 @@ vec3f trace(ray view_ray, const scene& scene)
                        surface_reflect(view_ray.direction, light_direction, obj,
                                        intersection);
 
-        auto [next_ray, transmission] =
-            mirror_bounce(view_ray.direction, obj, intersection);
-        remaining_light_transfer = remaining_light_transfer * reflectance;
+        auto [next_ray, transmission] = std::get<sphere>(obj).surface->scatter(
+            view_ray.direction, obj, intersection);
+        remaining_light_transfer = remaining_light_transfer * transmission;
 
         light += direct_light;
 
@@ -335,7 +343,7 @@ vec3f supersample(const camera& view, const vec2i& resolution,
 
 void sfml_popup(camera view, scene scene)
 {
-    auto resolution = vec2i{1000, 1000};
+    auto resolution = vec2i{700, 700};
     // float scaling = 1;
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -442,15 +450,18 @@ void text_output(camera view, scene scene)
 
 int main()
 {
+    matte.reflect = matte_reflect;
+    matte.scatter = matte_scatter;
+
     // auto view = camera{{1, 5, 0}, vec3f{0.5918782901, -8.91237850058, 40}.normalized(), 0.000000001};
     auto view = camera{{1, 5, 0}, vec3f{-0.1, -0.1, 1}.normalized(), 30};
 
     auto objects = scene{
-        {sphere{{-6, -5, 35}, 1, {0.6, 1, 0.8}, mirror_reflect}},
-        {sphere{{3, -3.5, 40}, 2.5, {1, 0.2, 0.2}, mirror_reflect}},
-        {sphere{{-1, 2, 60}, 8, {1, 0.70, 0.25}, mirror_reflect}},
-        {sphere{{-8, 6, 45}, 1, {1, 1, 1}, mirror_reflect}},
-        {sphere{{0, -1000000006., 0}, 1000000000., {.85, .85, .95}, mirror_reflect}},
+        {sphere{{-6, -5, 35}, 1, {0.6, 1, 0.8}, &matte}},
+        {sphere{{3, -3.5, 40}, 2.5, {1, 0.2, 0.2}, &matte}},
+        {sphere{{-1, 2, 60}, 8, {1, 0.70, 0.25}, &matte}},
+        {sphere{{-8, 6, 45}, 1, {1, 1, 1}, &matte}},
+        {sphere{{0, -1000000006., 0}, 1000000000., {.85, .85, .95}, &mirror}},
         // {sphere{{0, 1000000000., 0}, 999999900., {.9, .95, 1},
         // light_source}},
 
