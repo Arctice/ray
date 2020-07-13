@@ -37,9 +37,9 @@ struct sphere;
 using object = std::variant<sphere, point_light>;
 using scene = std::vector<object>;
 
-using material = vec3f (*)(const vec3f&, const object&, const intersection&);
+using material = vec3f (*)(const vec3f&, const vec3f&, const object&, const intersection&);
 
-vec3f matte_reflect(const vec3f&, const object&, const intersection&);
+vec3f matte_reflect(const vec3f&, const vec3f&, const object&, const intersection&);
 
 struct sphere {
     vec3f center;
@@ -67,36 +67,40 @@ vec3f reflect(const vec3f& v, const vec3f& normal)
     return v - normal * 2.0 * v.dot(normal);
 }
 
-// vec3f light_source(const vec3f& observer, const object& obj,
-//                   const intersection& intersection, const scene& objects)
-// {
-//     return std::get<sphere>(obj).color;
-// }
+struct reflection_sample{
+    ray reflected;
+    vec3f light_transfer;
+};
 
-// vec3f mirror_reflect(const vec3f& observer, const object& obj,
-//                      const intersection& intersection, const scene& objects)
-// {
-//     auto reflection =
-//         reflect(observer.direction, intersection.surface_normal).normalized();
-//     auto reflected_ray = ray{intersection.p, reflection, observer.depth};
+vec3f matte_reflect(const vec3f& view, const vec3f& light, const object& obj,
+                    const intersection& intersection)
+{
+    return std::get<sphere>(obj).color;
+}
 
-//     return std::get<sphere>(obj).color * trace(reflected_ray, objects);
-// }
-
-ray matte_bounce(const vec3f& view, const object& obj,
-                 const intersection& intersection)
+reflection_sample matte_bounce(const vec3f& view, const object& obj,
+                               const intersection& intersection)
 {
     auto new_direction =
         intersection.p + intersection.surface_normal + random_direction();
     auto normal = (new_direction - intersection.p).normalized();
     auto diffuse_ray = ray{intersection.p, normal};
-    return diffuse_ray;
+    return {diffuse_ray, matte_reflect(view, {}, obj, intersection)};
 }
 
-vec3f matte_reflect(const vec3f& view, const object& obj,
-                    const intersection& intersection)
+vec3f mirror_reflect(const vec3f& view, const vec3f& light, const object& obj,
+                     const intersection& intersection)
 {
-    return std::get<sphere>(obj).color;
+    return {};
+}
+
+reflection_sample mirror_bounce(const vec3f& view, const object& obj,
+                                const intersection& intersection)
+{
+    auto reflection = reflect(view, intersection.surface_normal).normalized();
+    auto reflected_ray = ray{intersection.p, reflection};
+
+    return {reflected_ray, std::get<sphere>(obj).color};
 }
 
 // vec3f glossy_reflect(const vec3f& observer, const object& obj,
@@ -114,10 +118,10 @@ vec3f matte_reflect(const vec3f& view, const object& obj,
 //     return std::get<sphere>(obj).color * (trace(gloss_ray, objects) * 0.7);
 // }
 
-vec3f surface_reflect(const vec3f& view, const object& obj,
+vec3f surface_reflect(const vec3f& view, const vec3f& light, const object& obj,
                       const intersection& intersection)
 {
-    return intersection.mat(view, obj, intersection);
+    return intersection.mat(view, light, obj, intersection);
 }
 
 std::optional<intersection> intersect(const ray&, const point_light&)
@@ -240,22 +244,24 @@ vec3f trace(ray view_ray, const scene& scene)
 
     while (true) {
         auto found_intersection = intersect(view_ray, scene);
-        if (not found_intersection) return light;
+        if (not found_intersection)
+            return light;
         auto& [obj, intersection] = *found_intersection;
 
-        auto [direct_light, light_direction]
-            = sample_direct_lighting(intersection, scene);
+        auto [direct_light, light_direction] =
+            sample_direct_lighting(intersection, scene);
 
-        direct_light = direct_light * remaining_light_transfer
-                       * surface_reflect(light_direction, obj, intersection);
+        direct_light = direct_light * remaining_light_transfer *
+                       surface_reflect(view_ray.direction, light_direction, obj,
+                                       intersection);
 
-        auto reflectance
-            = surface_reflect(view_ray.direction, obj, intersection);
+        auto [next_ray, transmission] =
+            mirror_bounce(view_ray.direction, obj, intersection);
         remaining_light_transfer = remaining_light_transfer * reflectance;
 
         light += direct_light;
 
-        view_ray = matte_bounce(view_ray.direction, obj, intersection);
+        view_ray = next_ray;
     }
 
     return light;
@@ -312,7 +318,7 @@ vec3<unsigned char> rgb_light(vec3f light)
 vec3f supersample(const camera& view, const vec2i& resolution,
                   const scene& objects, vec2i pixel)
 {
-    constexpr auto supersampling{16};
+    constexpr auto supersampling{8};
 
     vec3f color{};
 
@@ -329,7 +335,7 @@ vec3f supersample(const camera& view, const vec2i& resolution,
 
 void sfml_popup(camera view, scene scene)
 {
-    auto resolution = vec2i{800, 800};
+    auto resolution = vec2i{1000, 1000};
     // float scaling = 1;
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -440,17 +446,17 @@ int main()
     auto view = camera{{1, 5, 0}, vec3f{-0.1, -0.1, 1}.normalized(), 30};
 
     auto objects = scene{
-        {sphere{{-6, -5, 35}, 1, {0.6, 1, 0.8}}},
-        {sphere{{3, -3.5, 40}, 2.5, {1, 0.2, 0.2}}},
-        {sphere{{-1, 2, 60}, 8, {1, 0.70, 0.25}}},
-        {sphere{{-8, 6, 45}, 1, {1, 1, 1}}},
-        {sphere{{0, -1000000006., 0}, 1000000000., {.85, .85, .95}}},
+        {sphere{{-6, -5, 35}, 1, {0.6, 1, 0.8}, mirror_reflect}},
+        {sphere{{3, -3.5, 40}, 2.5, {1, 0.2, 0.2}, mirror_reflect}},
+        {sphere{{-1, 2, 60}, 8, {1, 0.70, 0.25}, mirror_reflect}},
+        {sphere{{-8, 6, 45}, 1, {1, 1, 1}, mirror_reflect}},
+        {sphere{{0, -1000000006., 0}, 1000000000., {.85, .85, .95}, mirror_reflect}},
         // {sphere{{0, 1000000000., 0}, 999999900., {.9, .95, 1},
         // light_source}},
 
-        {point_light{{-4, -4, 45}, {50., 50., 200.}}},
-        {point_light{{4, 6, 25}, {300., 50., 50.}}},
         {point_light{{0, 500, 0}, {100000., 100000., 100000.}}},
+        // {point_light{{-4, -4, 45}, {50., 50., 100.}}},
+        // {point_light{{4, 6, 25}, {300., 50., 50.}}},
     };
 
     // text_output(view, objects);
