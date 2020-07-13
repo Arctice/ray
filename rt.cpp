@@ -37,20 +37,16 @@ struct sphere;
 using object = std::variant<sphere, point_light>;
 using scene = std::vector<object>;
 
-using material = vec3f (*)(const ray&, const object&, const intersection&,
-                           const scene&);
+using material = vec3f (*)(const vec3f&, const object&, const intersection&);
 
-vec3f matte_diffuse(const ray&, const object&, const intersection&,
-                    const scene&);
+vec3f matte_reflect(const vec3f&, const object&, const intersection&);
 
 struct sphere {
     vec3f center;
     double radius;
     vec3f color{1, 1, 1};
-    material surface{matte_diffuse};
+    material surface{matte_reflect};
 };
-
-vec3f trace(ray& view_ray, const scene& objects);
 
 struct intersection {
     vec3f p;
@@ -71,54 +67,57 @@ vec3f reflect(const vec3f& v, const vec3f& normal)
     return v - normal * 2.0 * v.dot(normal);
 }
 
-vec3f light_source(const ray& observer, const object& obj,
-                  const intersection& intersection, const scene& objects)
+// vec3f light_source(const vec3f& observer, const object& obj,
+//                   const intersection& intersection, const scene& objects)
+// {
+//     return std::get<sphere>(obj).color;
+// }
+
+// vec3f mirror_reflect(const vec3f& observer, const object& obj,
+//                      const intersection& intersection, const scene& objects)
+// {
+//     auto reflection =
+//         reflect(observer.direction, intersection.surface_normal).normalized();
+//     auto reflected_ray = ray{intersection.p, reflection, observer.depth};
+
+//     return std::get<sphere>(obj).color * trace(reflected_ray, objects);
+// }
+
+ray matte_bounce(const vec3f& view, const object& obj,
+                 const intersection& intersection)
+{
+    auto new_direction =
+        intersection.p + intersection.surface_normal + random_direction();
+    auto normal = (new_direction - intersection.p).normalized();
+    auto diffuse_ray = ray{intersection.p, normal};
+    return diffuse_ray;
+}
+
+vec3f matte_reflect(const vec3f& view, const object& obj,
+                    const intersection& intersection)
 {
     return std::get<sphere>(obj).color;
 }
 
-vec3f mirror_diffuse(const ray& observer, const object& obj,
-                     const intersection& intersection, const scene& objects)
+// vec3f glossy_reflect(const vec3f& observer, const object& obj,
+//                      const intersection& intersection, const scene& objects)
+// {
+//     auto reflection
+//         = reflect(observer.direction, intersection.surface_normal).normalized();
+//     auto diffused
+//         = intersection.p + intersection.surface_normal + random_direction();
+//     auto diffusion = (diffused - intersection.p).normalized();
+
+//     auto normal = (reflection * 0.75 + diffusion * 0.25).normalized();
+//     auto gloss_ray = ray{intersection.p, normal, observer.depth};
+
+//     return std::get<sphere>(obj).color * (trace(gloss_ray, objects) * 0.7);
+// }
+
+vec3f surface_reflect(const vec3f& view, const object& obj,
+                      const intersection& intersection)
 {
-    auto reflection =
-        reflect(observer.direction, intersection.surface_normal).normalized();
-    auto reflected_ray = ray{intersection.p, reflection, observer.depth};
-
-    return std::get<sphere>(obj).color * trace(reflected_ray, objects);
-}
-
-vec3f matte_diffuse(const ray& observer, const object& obj,
-                    const intersection& intersection, const scene& objects)
-{
-    // auto new_direction =
-    //     intersection.p + intersection.surface_normal + random_direction();
-    // auto normal = (new_direction - intersection.p).normalized();
-    // auto diffuse_ray = ray{intersection.p, normal, observer.depth};
-
-    // auto reflectivity{0.60};
-    // auto transferance = std::get<sphere>(obj).color * 2.0 * reflectivity
-    //                     * std::max(0., intersection.surface_normal.dot(normal));
-
-    // return trace(diffuse_ray, objects) * transferance;
-
-    return std::get<sphere>(obj).color * (1. / pi);
-
-    // return std::get<sphere>(obj).color * (trace(diffuse_ray, objects) * 0.5);
-}
-
-vec3f glossy_diffuse(const ray& observer, const object& obj,
-                     const intersection& intersection, const scene& objects)
-{
-    auto reflection
-        = reflect(observer.direction, intersection.surface_normal).normalized();
-    auto diffused
-        = intersection.p + intersection.surface_normal + random_direction();
-    auto diffusion = (diffused - intersection.p).normalized();
-
-    auto normal = (reflection * 0.75 + diffusion * 0.25).normalized();
-    auto gloss_ray = ray{intersection.p, normal, observer.depth};
-
-    return std::get<sphere>(obj).color * (trace(gloss_ray, objects) * 0.7);
+    return intersection.mat(view, obj, intersection);
 }
 
 std::optional<intersection> intersect(const ray&, const point_light&)
@@ -147,12 +146,6 @@ std::optional<intersection> intersect(const ray& r, const sphere& s)
 std::optional<intersection> intersect(const ray& ray, const object& obj)
 {
     return std::visit([&ray](auto& obj) { return intersect(ray, obj); }, obj);
-}
-
-vec3f diffuse(const ray& observer, const object& obj,
-              const intersection& intersection, const scene& objects)
-{
-    return intersection.mat(observer, obj, intersection, objects);
 }
 
 std::optional<std::pair<const object&, intersection>>
@@ -184,7 +177,13 @@ intersect(ray& ray, const scene& objects)
         return {};
 }
 
-vec3f direct_lighting(const intersection& p, const scene& objects)
+struct incident_light{
+    vec3f light;
+    vec3f normal;
+};
+
+incident_light sample_direct_lighting(const intersection& p,
+                                      const scene& objects)
 {
     // select one light
     auto light_count{0};
@@ -195,7 +194,7 @@ vec3f direct_lighting(const intersection& p, const scene& objects)
             },
             obj);
     }
-    if (light_count == 0) return black;
+    if (light_count == 0) return {black, {}};
 
     light_count = int(float(light_count) * drand48()) + 1;
 
@@ -223,7 +222,7 @@ vec3f direct_lighting(const intersection& p, const scene& objects)
     if (visibility) {
         auto& [_, intersection] = *visibility;
         auto intersection_distance = (intersection.p - p.p).length2();
-        if (intersection_distance < towards_light.length2()) return black;
+        if (intersection_distance < towards_light.length2()) return {black, {}};
     }
 
     // return incident light contribution
@@ -231,19 +230,35 @@ vec3f direct_lighting(const intersection& p, const scene& objects)
 
     L *= p.surface_normal.dot(shadow_ray.direction);
 
-    return L;
+    return {L, shadow_ray.direction};
 }
 
-vec3f trace(ray& view_ray, const scene& scene)
+vec3f trace(ray view_ray, const scene& scene)
 {
-    auto found_intersection = intersect(view_ray, scene);
-    if (not found_intersection) return black;
+    vec3f light = black;
+    auto remaining_light_transfer = vec3f{1, 1, 1};
 
-    auto& [obj, intersection] = *found_intersection;
+    while (true) {
+        auto found_intersection = intersect(view_ray, scene);
+        if (not found_intersection) return light;
+        auto& [obj, intersection] = *found_intersection;
 
-    auto light = direct_lighting(intersection, scene);
+        auto [direct_light, light_direction]
+            = sample_direct_lighting(intersection, scene);
 
-    return light * diffuse(view_ray, obj, intersection, scene);
+        direct_light = direct_light * remaining_light_transfer
+                       * surface_reflect(light_direction, obj, intersection);
+
+        auto reflectance
+            = surface_reflect(view_ray.direction, obj, intersection);
+        remaining_light_transfer = remaining_light_transfer * reflectance;
+
+        light += direct_light;
+
+        view_ray = matte_bounce(view_ray.direction, obj, intersection);
+    }
+
+    return light;
 }
 
 vec3f pixel_ray(camera view, vec2i resolution, vec2f pixel)
@@ -283,7 +298,8 @@ vec3f pixel_ray(camera view, vec2i resolution, vec2f pixel)
 
 vec3f gamma_correction(vec3f light)
 {
-    return {std::sqrt(light.x), std::sqrt(light.y), std::sqrt(light.z)};
+    return {std::pow(light.x, 1. / 2.2), std::pow(light.y, 1. / 2.2),
+            std::pow(light.z, 1. / 2.2)};
 }
 
 vec3<unsigned char> rgb_light(vec3f light)
@@ -296,7 +312,7 @@ vec3<unsigned char> rgb_light(vec3f light)
 vec3f supersample(const camera& view, const vec2i& resolution,
                   const scene& objects, vec2i pixel)
 {
-    constexpr auto supersampling{8};
+    constexpr auto supersampling{16};
 
     vec3f color{};
 
@@ -424,18 +440,17 @@ int main()
     auto view = camera{{1, 5, 0}, vec3f{-0.1, -0.1, 1}.normalized(), 30};
 
     auto objects = scene{
-        {sphere{{-6, -5, 35}, 1, {0.6, 1, 0.8}, matte_diffuse}},
-        {sphere{{3, -3.5, 40}, 2.5, {1, 0.2, 0.2}, matte_diffuse}},
-        {sphere{{-1, 2, 60}, 8, {1, 0.70, 0.25}, matte_diffuse}},
-        {sphere{{-8, 6, 45}, 1, {1, 1, 1}, matte_diffuse}},
-        {sphere{
-            {0, -1000000006., 0}, 1000000000., {.85, .85, .95}, matte_diffuse}},
+        {sphere{{-6, -5, 35}, 1, {0.6, 1, 0.8}}},
+        {sphere{{3, -3.5, 40}, 2.5, {1, 0.2, 0.2}}},
+        {sphere{{-1, 2, 60}, 8, {1, 0.70, 0.25}}},
+        {sphere{{-8, 6, 45}, 1, {1, 1, 1}}},
+        {sphere{{0, -1000000006., 0}, 1000000000., {.85, .85, .95}}},
         // {sphere{{0, 1000000000., 0}, 999999900., {.9, .95, 1},
         // light_source}},
 
         {point_light{{-4, -4, 45}, {50., 50., 200.}}},
         {point_light{{4, 6, 25}, {300., 50., 50.}}},
-        {point_light{{0,500,0}, {100000., 100000., 100000.}}},
+        {point_light{{0, 500, 0}, {100000., 100000., 100000.}}},
     };
 
     // text_output(view, objects);
