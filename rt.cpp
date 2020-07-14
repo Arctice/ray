@@ -24,7 +24,6 @@ struct camera {
 
 struct ray {
     vec3f origin, direction;
-    std::uint8_t depth;
 };
 
 struct point_light{
@@ -108,6 +107,21 @@ reflection_sample mirror_scatter(const vec3f& view, const object& obj,
     return {reflected_ray, std::get<sphere>(obj).color};
 }
 
+double fresnel_dielectric(double cosθi, double ηi, double ηt){
+    // ηi and ηt are the incident and transmitted
+    // indices of medium refraction
+    auto sinθi = std::sqrt(1.0 - cosθi * cosθi);
+    auto sinθt = ηi / ηt * sinθi;
+    // handle total internal reflection if sinθ > 1
+    auto cosθt = std::sqrt(1.0 - sinθt * sinθt);
+
+    auto r_par = (ηt * cosθi - ηi * cosθt) / (ηt * cosθi + ηi * cosθt);
+    auto r_per = (ηi * cosθi - ηt * cosθt) / (ηi * cosθi + ηt * cosθt);
+
+    auto Fr = (r_par * r_par + r_per * r_per) / 2.;
+    return Fr;
+}
+
 reflection_sample dielectric_scatter(const vec3f& view, const object& obj,
                                      const intersection& intersection)
 {
@@ -124,17 +138,8 @@ reflection_sample dielectric_scatter(const vec3f& view, const object& obj,
 
     auto ηi = 1.;
     auto ηt = 1.5;
-
     auto cosθi = reflection.dot(intersection.surface_normal);
-    auto sinθi = std::sqrt(1.0 - cosθi * cosθi);
-    auto sinθt = ηi / ηt * sinθi;
-    // handle total internal reflection if sinθ > 1
-    auto cosθt = std::sqrt(1.0 - sinθt * sinθt);
-
-    auto r_par = (ηt * cosθi - ηi * cosθt) / (ηt * cosθi + ηi * cosθt);
-    auto r_per = (ηi * cosθi - ηt * cosθt) / (ηi * cosθi + ηt * cosθt);
-
-    auto Fr = (r_par * r_par + r_per * r_per) / 2.;
+    auto Fr = fresnel_dielectric(cosθi, ηi, ηt);
     Fr /= std::abs(cosθi);
 
     auto light = std::get<sphere>(obj).color * Fr;
@@ -158,21 +163,21 @@ reflection_sample conductor_scatter(const vec3f& view, const object& obj,
     vec3f η = ηt / ηi;
     vec3f ηk = k / ηi;
 
-    double cosθ2 = cosθ*cosθ;
-    double sinθ2 = 1. - cosθ;
+    double cos2θ = cosθ*cosθ;
+    double sin2θ = 1. - cosθ;
 
     vec3f η2 = η*η;
     vec3f ηk2 = ηk*ηk;
 
-    vec3f t0 = η2 - ηk2 - sinθ2;
+    vec3f t0 = η2 - ηk2 - sin2θ;
     vec3f a2plusb2 = sqrt(t0 * t0 + η2 * ηk2 * 4);
-    vec3f t1 = a2plusb2 + cosθ2;
+    vec3f t1 = a2plusb2 + cos2θ;
     vec3f a = sqrt((a2plusb2 + t0) * 0.5f);
     vec3f t2 = a * (2. * cosθ);
 
     vec3f rs = (t1 - t2) / (t1 + t2);
-    vec3f t3 = a2plusb2 * cosθ2 + sinθ2 * sinθ2;
-    vec3f t4 = t2 * sinθ2;
+    vec3f t3 = a2plusb2 * cos2θ + sin2θ * sin2θ;
+    vec3f t4 = t2 * sin2θ;
     vec3f rp = rs * (t3 - t4) / (t3 + t4);
 
     auto Fr = (rp + rs) * .5;
@@ -182,10 +187,45 @@ reflection_sample conductor_scatter(const vec3f& view, const object& obj,
     return {reflected_ray, light};
 }
 
+reflection_sample transmission_scatter(const vec3f& view, const object& obj,
+                                       const intersection& intersection)
+{
+    auto cosθ = (view * -1.).dot(intersection.surface_normal);
+    bool entering = 0 < cosθ;
+
+    double η = 1.5;
+
+    double ηi = entering ? 1.0 : η;
+    double ηt = entering ? η : 1.0;
+
+    η = ηi / ηt;
+    auto sin2θi = 1. - cosθ * cosθ;
+    auto sin2θt = η * η * sin2θi;
+    if (sin2θt >= 1) {
+        // total internal reflection
+        return {{}, {}};
+    }
+    auto cosθt = std::sqrt(1. - sin2θt);
+    vec3f refraction
+        = view * η + intersection.surface_normal * (η * cosθ - cosθt);
+
+    // std::cerr << intersection.surface_normal << " refract\n";
+
+    auto transmission = std::get<sphere>(obj).color;
+    auto Fr = fresnel_dielectric(cosθt, ηi, ηt);
+    auto light = transmission * (vec3f(-1) - Fr);
+    light /= std::abs(cosθ);
+
+    auto refracted_ray = ray{intersection.p, refraction};
+
+    return {refracted_ray, light};
+}
+
 material matte{matte_reflect, matte_scatter};
 material mirror{specular_reflect, mirror_scatter};
-material fresnel_dielectric{specular_reflect, dielectric_scatter};
-material fresnel_conductor{specular_reflect, conductor_scatter};
+material specular_dielectric{specular_reflect, dielectric_scatter};
+material specular_conductor{specular_reflect, conductor_scatter};
+material specular_transmissive{specular_reflect, transmission_scatter};
 
 vec3f surface_reflect(const vec3f& view, const vec3f& light, const object& obj,
                       const intersection& intersection)
@@ -207,12 +247,16 @@ std::optional<intersection> intersect(const ray& r, const sphere& s)
     auto closest_to_sphere_sq = (to_sphere - cast).length2();
     if (projection < 0 or closest_to_sphere_sq >= r2) return {};
 
+    auto inside = to_sphere.length2() <= r2;
+
     auto intersection_depth = std::sqrt(r2 - closest_to_sphere_sq);
-    auto intersection_distance = projection - intersection_depth;
+    auto intersection_distance
+        = projection - intersection_depth * (inside ? -2 : 1);
     if (intersection_distance < -10e-10) return {};
 
     auto intersection_point = r.origin + r.direction * intersection_distance;
-    auto surface_normal = (intersection_point - s.center).normalized();
+    auto surface_normal
+        = (intersection_point - s.center).normalized() * (inside ? -1 : 1);
     return {{intersection_point, surface_normal, s.surface}};
 }
 
@@ -224,9 +268,6 @@ std::optional<intersection> intersect(const ray& ray, const object& obj)
 std::optional<std::pair<const object&, intersection>>
 intersect(ray& ray, const scene& objects)
 {
-    if (ray.depth > 32) return {};
-    ray.depth++;
-
     auto nearest = std::numeric_limits<double>::max();
     std::optional<intersection> result{};
     const object* intersected_object{};
@@ -521,8 +562,8 @@ int main()
     auto objects = scene{
         {sphere{{-6, -5, 35}, 1, {0.6, 1, 0.8}, &matte}},
         {sphere{{3, -3.5, 40}, 2.5, {1, 0.2, 0.2}, &mirror}},
-        {sphere{{-1, 2, 60}, 8, {.83, .686, .21}, &fresnel_conductor}},
-        {sphere{{-9, -2, 49}, 4., {.05, .6, .8}, &fresnel_dielectric}},
+        {sphere{{-1, 2, 60}, 8, {.83, .686, .21}, &specular_conductor}},
+        {sphere{{-9, -2, 49}, 4., {.05, .6, .8}, &specular_dielectric}},
         {sphere{{-8, 6, 45}, 1, {1, 1, 1}, &matte}},
         {sphere{{0, -1000000006., 0}, 1000000000., {.85, .85, .95}, &matte}},
 
