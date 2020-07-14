@@ -93,7 +93,7 @@ reflection_sample matte_scatter(const vec3f& view, const object& obj,
     return {diffuse_ray, matte_reflect(view, {}, obj, intersection)};
 }
 
-vec3f mirror_reflect(const vec3f& view, const vec3f& light, const object& obj,
+vec3f specular_reflect(const vec3f& view, const vec3f& light, const object& obj,
                      const intersection& intersection)
 {
     return {};
@@ -108,23 +108,84 @@ reflection_sample mirror_scatter(const vec3f& view, const object& obj,
     return {reflected_ray, std::get<sphere>(obj).color};
 }
 
+reflection_sample dielectric_scatter(const vec3f& view, const object& obj,
+                                     const intersection& intersection)
+{
+    auto reflection = reflect(view, intersection.surface_normal).normalized();
+    auto reflected_ray = ray{intersection.p, reflection};
+
+    // dielectric fresnel reflectance
+    // reflectance by light polarization
+    // r∥ = Ƞₜ cosθᵢ - Ƞᵢ cosθₜ / Ƞₜ cosθᵢ + Ƞᵢ cosθₜ
+    // r⟂ = Ƞᵢ cosθᵢ - Ƞₜ cosθₜ / Ƞᵢ cosθᵢ + Ƞₜ cosθₜ
+    // fresnel reflectance for unpolarized light
+    // Fᵣ = (r∥² + r⟂²) / 2
+    // total energy transmitted = 1 - Fᵣ
+
+    auto ηi = 1.;
+    auto ηt = 1.5;
+
+    auto cosθi = reflection.dot(intersection.surface_normal);
+    auto sinθi = std::sqrt(1.0 - cosθi * cosθi);
+    auto sinθt = ηi / ηt * sinθi;
+    // handle total internal reflection if sinθ > 1
+    auto cosθt = std::sqrt(1.0 - sinθt * sinθt);
+
+    auto r_par = (ηt * cosθi - ηi * cosθt) / (ηt * cosθi + ηi * cosθt);
+    auto r_per = (ηi * cosθi - ηt * cosθt) / (ηi * cosθi + ηt * cosθt);
+
+    auto Fr = (r_par * r_par + r_per * r_per) / 2.;
+    Fr /= std::abs(cosθi);
+
+    auto light = std::get<sphere>(obj).color * Fr;
+    return {reflected_ray, light};
+}
+
+vec3f sqrt(vec3f v) { return {std::sqrt(v.x), std::sqrt(v.y), std::sqrt(v.z)}; }
+
+reflection_sample conductor_scatter(const vec3f& view, const object& obj,
+                                    const intersection& intersection)
+{
+    auto reflection = reflect(view, intersection.surface_normal).normalized();
+    auto reflected_ray = ray{intersection.p, reflection};
+
+    auto cosθ = reflection.dot(intersection.surface_normal);
+
+    auto ηi = 1.;
+    auto ηt = 0.32393;
+    auto k = 2.5972;
+    
+    vec3f η = ηt / ηi;
+    vec3f ηk = k / ηi;
+
+    double cosθ2 = cosθ*cosθ;
+    double sinθ2 = 1. - cosθ;
+
+    vec3f η2 = η*η;
+    vec3f ηk2 = ηk*ηk;
+
+    vec3f t0 = η2 - ηk2 - sinθ2;
+    vec3f a2plusb2 = sqrt(t0 * t0 + η2 * ηk2 * 4);
+    vec3f t1 = a2plusb2 + cosθ2;
+    vec3f a = sqrt((a2plusb2 + t0) * 0.5f);
+    vec3f t2 = a * (2. * cosθ);
+
+    vec3f rs = (t1 - t2) / (t1 + t2);
+    vec3f t3 = a2plusb2 * cosθ2 + sinθ2 * sinθ2;
+    vec3f t4 = t2 * sinθ2;
+    vec3f rp = rs * (t3 - t4) / (t3 + t4);
+
+    auto Fr = (rp + rs) * .5;
+    Fr /= std::abs(cosθ);
+
+    auto light = std::get<sphere>(obj).color * Fr;
+    return {reflected_ray, light};
+}
+
 material matte{matte_reflect, matte_scatter};
-material mirror{mirror_reflect, mirror_scatter};
-
-// vec3f glossy_reflect(const vec3f& observer, const object& obj,
-//                      const intersection& intersection, const scene& objects)
-// {
-//     auto reflection
-//         = reflect(observer.direction, intersection.surface_normal).normalized();
-//     auto diffused
-//         = intersection.p + intersection.surface_normal + random_direction();
-//     auto diffusion = (diffused - intersection.p).normalized();
-
-//     auto normal = (reflection * 0.75 + diffusion * 0.25).normalized();
-//     auto gloss_ray = ray{intersection.p, normal, observer.depth};
-
-//     return std::get<sphere>(obj).color * (trace(gloss_ray, objects) * 0.7);
-// }
+material mirror{specular_reflect, mirror_scatter};
+material fresnel_dielectric{specular_reflect, dielectric_scatter};
+material fresnel_conductor{specular_reflect, conductor_scatter};
 
 vec3f surface_reflect(const vec3f& view, const vec3f& light, const object& obj,
                       const intersection& intersection)
@@ -265,6 +326,7 @@ vec3f trace(ray view_ray, const scene& scene)
 
         auto [next_ray, transmission] = std::get<sphere>(obj).surface->scatter(
             view_ray.direction, obj, intersection);
+        transmission *= std::abs(intersection.surface_normal.dot(next_ray.direction));
         remaining_light_transfer = remaining_light_transfer * transmission;
 
         light += direct_light;
@@ -326,7 +388,7 @@ vec3<unsigned char> rgb_light(vec3f light)
 vec3f supersample(const camera& view, const vec2i& resolution,
                   const scene& objects, vec2i pixel)
 {
-    constexpr auto supersampling{8};
+    constexpr auto supersampling{12};
 
     vec3f color{};
 
@@ -343,7 +405,7 @@ vec3f supersample(const camera& view, const vec2i& resolution,
 
 void sfml_popup(camera view, scene scene)
 {
-    auto resolution = vec2i{700, 700};
+    auto resolution = vec2i{900, 900};
     // float scaling = 1;
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -458,16 +520,15 @@ int main()
 
     auto objects = scene{
         {sphere{{-6, -5, 35}, 1, {0.6, 1, 0.8}, &matte}},
-        {sphere{{3, -3.5, 40}, 2.5, {1, 0.2, 0.2}, &matte}},
-        {sphere{{-1, 2, 60}, 8, {1, 0.70, 0.25}, &matte}},
+        {sphere{{3, -3.5, 40}, 2.5, {1, 0.2, 0.2}, &mirror}},
+        {sphere{{-1, 2, 60}, 8, {.83, .686, .21}, &fresnel_conductor}},
+        {sphere{{-9, -2, 49}, 4., {.05, .6, .8}, &fresnel_dielectric}},
         {sphere{{-8, 6, 45}, 1, {1, 1, 1}, &matte}},
-        {sphere{{0, -1000000006., 0}, 1000000000., {.85, .85, .95}, &mirror}},
-        // {sphere{{0, 1000000000., 0}, 999999900., {.9, .95, 1},
-        // light_source}},
+        {sphere{{0, -1000000006., 0}, 1000000000., {.85, .85, .95}, &matte}},
 
-        {point_light{{0, 500, 0}, {100000., 100000., 100000.}}},
-        // {point_light{{-4, -4, 45}, {50., 50., 100.}}},
-        // {point_light{{4, 6, 25}, {300., 50., 50.}}},
+        // {point_light{{0, 2000, 0}, {100000., 100000., 100000.}}},
+        {point_light{{-4, -4, 45}, {70., 60., 80.}}},
+        {point_light{{20, 15, 70}, {20., 20., 50.}}},
     };
 
     // text_output(view, objects);

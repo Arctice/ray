@@ -8,6 +8,7 @@ public:
     T x, y, z;
 
     vec3() : x(0), y(0), z(0) {}
+    vec3(T a) : x(a), y(a), z(a) {}
     vec3(T vx, T vy, T zy) : x(vx), y(vy), z(zy) {}
 
     vec3 operator+(const vec3& rhs) const;
@@ -17,8 +18,11 @@ public:
 
     template <typename V> vec3 operator*(const V& rhs) const;
     template <typename V> vec3& operator*=(const V& rhs);
+    template <typename V> vec3 operator/(const V& rhs) const;
+    template <typename V> vec3& operator/=(const V& rhs);
 
     template <typename V> vec3 operator*(const vec3<V>& rhs) const;
+    template <typename V> vec3 operator/(const vec3<V>& rhs) const;
 
     bool operator==(const vec3& rhs) const;
     bool operator!=(const vec3& rhs) const;
@@ -93,6 +97,30 @@ template <typename V>
 vec3<T> vec3<T>::operator*(const vec3<V>& rhs) const
 {
     return vec3<T>(x * rhs.x, y * rhs.y, z * rhs.z);
+}
+
+template <typename T>
+template <typename V>
+vec3<T> vec3<T>::operator/(const V& rhs) const
+{
+    return vec3<T>(x / rhs, y / rhs, z / rhs);
+}
+
+template <typename T>
+template <typename V>
+vec3<T>& vec3<T>::operator/=(const V& rhs)
+{
+    x /= rhs;
+    y /= rhs;
+    z /= rhs;
+    return *this;
+}
+
+template <typename T>
+template <typename V>
+vec3<T> vec3<T>::operator/(const vec3<V>& rhs) const
+{
+    return vec3<T>(x / rhs.x, y / rhs.y, z / rhs.z);
 }
 
 template <typename T> vec3<T>& vec3<T>::operator+=(const vec3<T>& rhs)
