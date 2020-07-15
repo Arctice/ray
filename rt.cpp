@@ -26,7 +26,7 @@ struct ray {
     vec3f origin, direction;
 };
 
-struct point_light{
+struct point_light {
     vec3f position;
     vec3f intensity;
 };
@@ -36,7 +36,7 @@ struct sphere;
 using object = std::variant<sphere, point_light>;
 using scene = std::vector<object>;
 
-struct reflection_sample{
+struct reflection {
     ray reflected;
     vec3f light_transfer;
 };
@@ -44,8 +44,7 @@ struct reflection_sample{
 struct material {
     vec3f (*reflect)(const vec3f&, const vec3f&, const object&,
                      const intersection&);
-    reflection_sample (*scatter)(const vec3f&, const object&,
-                                 const intersection&);
+    reflection (*scatter)(const vec3f&, const object&, const intersection&);
 };
 
 extern material matte;
@@ -82,24 +81,24 @@ vec3f matte_reflect(const vec3f& view, const vec3f& light, const object& obj,
     return std::get<sphere>(obj).color;
 }
 
-reflection_sample matte_scatter(const vec3f& view, const object& obj,
-                               const intersection& intersection)
+reflection matte_scatter(const vec3f& view, const object& obj,
+                         const intersection& intersection)
 {
-    auto new_direction =
-        intersection.p + intersection.surface_normal + random_direction();
+    auto new_direction
+        = intersection.p + intersection.surface_normal + random_direction();
     auto normal = (new_direction - intersection.p).normalized();
     auto diffuse_ray = ray{intersection.p, normal};
     return {diffuse_ray, matte_reflect(view, {}, obj, intersection)};
 }
 
 vec3f specular_reflect(const vec3f& view, const vec3f& light, const object& obj,
-                     const intersection& intersection)
+                       const intersection& intersection)
 {
     return {};
 }
 
-reflection_sample mirror_scatter(const vec3f& view, const object& obj,
-                                const intersection& intersection)
+reflection mirror_scatter(const vec3f& view, const object& obj,
+                          const intersection& intersection)
 {
     auto reflection = reflect(view, intersection.surface_normal).normalized();
     auto reflected_ray = ray{intersection.p, reflection};
@@ -107,7 +106,8 @@ reflection_sample mirror_scatter(const vec3f& view, const object& obj,
     return {reflected_ray, std::get<sphere>(obj).color};
 }
 
-double fresnel_dielectric(double cosθi, double ηi, double ηt){
+double fresnel_dielectric(double cosθi, double ηi, double ηt)
+{
     // ηi and ηt are the incident and transmitted
     // indices of medium refraction
     auto sinθi = std::sqrt(1.0 - cosθi * cosθi);
@@ -122,8 +122,8 @@ double fresnel_dielectric(double cosθi, double ηi, double ηt){
     return Fr;
 }
 
-reflection_sample dielectric_scatter(const vec3f& view, const object& obj,
-                                     const intersection& intersection)
+reflection dielectric_scatter(const vec3f& view, const object& obj,
+                              const intersection& intersection)
 {
     auto reflection = reflect(view, intersection.surface_normal).normalized();
     auto reflected_ray = ray{intersection.p, reflection};
@@ -148,8 +148,8 @@ reflection_sample dielectric_scatter(const vec3f& view, const object& obj,
 
 vec3f sqrt(vec3f v) { return {std::sqrt(v.x), std::sqrt(v.y), std::sqrt(v.z)}; }
 
-reflection_sample conductor_scatter(const vec3f& view, const object& obj,
-                                    const intersection& intersection)
+reflection conductor_scatter(const vec3f& view, const object& obj,
+                             const intersection& intersection)
 {
     auto reflection = reflect(view, intersection.surface_normal).normalized();
     auto reflected_ray = ray{intersection.p, reflection};
@@ -159,15 +159,15 @@ reflection_sample conductor_scatter(const vec3f& view, const object& obj,
     auto ηi = 1.;
     auto ηt = 0.32393;
     auto k = 2.5972;
-    
+
     vec3f η = ηt / ηi;
     vec3f ηk = k / ηi;
 
-    double cos2θ = cosθ*cosθ;
+    double cos2θ = cosθ * cosθ;
     double sin2θ = 1. - cosθ;
 
-    vec3f η2 = η*η;
-    vec3f ηk2 = ηk*ηk;
+    vec3f η2 = η * η;
+    vec3f ηk2 = ηk * ηk;
 
     vec3f t0 = η2 - ηk2 - sin2θ;
     vec3f a2plusb2 = sqrt(t0 * t0 + η2 * ηk2 * 4);
@@ -187,16 +187,16 @@ reflection_sample conductor_scatter(const vec3f& view, const object& obj,
     return {reflected_ray, light};
 }
 
-reflection_sample transmission_scatter(const vec3f& view, const object& obj,
-                                       const intersection& intersection)
+reflection transmission_scatter(const vec3f& view, const object& obj,
+                                const intersection& intersection)
 {
     auto cosθ = (view * -1.).dot(intersection.surface_normal);
     bool entering = 0 < cosθ;
 
-    double η = 1.5;
+    auto η = 1.55;
 
-    double ηi = entering ? 1.0 : η;
-    double ηt = entering ? η : 1.0;
+    auto ηi = entering ? 1.0 : η;
+    auto ηt = entering ? η : 1.0;
 
     η = ηi / ηt;
     auto sin2θi = 1. - cosθ * cosθ;
@@ -209,11 +209,9 @@ reflection_sample transmission_scatter(const vec3f& view, const object& obj,
     vec3f refraction
         = view * η + intersection.surface_normal * (η * cosθ - cosθt);
 
-    // std::cerr << intersection.surface_normal << " refract\n";
-
     auto transmission = std::get<sphere>(obj).color;
     auto Fr = fresnel_dielectric(cosθt, ηi, ηt);
-    auto light = transmission * (vec3f(-1) - Fr);
+    auto light = transmission * (vec3f(1) - Fr);
     light /= std::abs(cosθ);
 
     auto refracted_ray = ray{intersection.p, refraction};
@@ -233,6 +231,12 @@ vec3f surface_reflect(const vec3f& view, const vec3f& light, const object& obj,
     return intersection.material->reflect(view, light, obj, intersection);
 }
 
+reflection surface_scatter(const vec3f& view, const object& obj,
+                           const intersection& intersection)
+{
+    return intersection.material->scatter(view, obj, intersection);
+}
+
 std::optional<intersection> intersect(const ray&, const point_light&)
 {
     return {};
@@ -247,7 +251,7 @@ std::optional<intersection> intersect(const ray& r, const sphere& s)
     auto closest_to_sphere_sq = (to_sphere - cast).length2();
     if (projection < 0 or closest_to_sphere_sq >= r2) return {};
 
-    auto inside = to_sphere.length2() <= r2;
+    auto inside = (to_sphere.length2() - 10e-10 <= r2);
 
     auto intersection_depth = std::sqrt(r2 - closest_to_sphere_sq);
     auto intersection_distance
@@ -266,7 +270,7 @@ std::optional<intersection> intersect(const ray& ray, const object& obj)
 }
 
 std::optional<std::pair<const object&, intersection>>
-intersect(ray& ray, const scene& objects)
+intersect(const ray& ray, const scene& objects)
 {
     auto nearest = std::numeric_limits<double>::max();
     std::optional<intersection> result{};
@@ -291,7 +295,7 @@ intersect(ray& ray, const scene& objects)
         return {};
 }
 
-struct incident_light{
+struct incident_light {
     vec3f light;
     vec3f normal;
 };
@@ -326,7 +330,7 @@ incident_light sample_direct_lighting(const intersection& p,
     }
 
     auto light_source = std::get<point_light>(*one_light);
-    
+
     // cast shadow ray
     auto towards_light = light_source.position - p.p;
     auto shadow_ray = ray{p.p, towards_light.normalized()};
@@ -354,24 +358,23 @@ vec3f trace(ray view_ray, const scene& scene)
 
     while (true) {
         auto found_intersection = intersect(view_ray, scene);
-        if (not found_intersection)
-            return light;
+        if (not found_intersection) return light;
         auto& [obj, intersection] = *found_intersection;
 
-        auto [direct_light, light_direction] =
-            sample_direct_lighting(intersection, scene);
+        auto [direct_light, light_direction]
+            = sample_direct_lighting(intersection, scene);
 
-        direct_light = direct_light * remaining_light_transfer *
-                       surface_reflect(view_ray.direction, light_direction, obj,
-                                       intersection);
+        auto light_contribution = surface_reflect(
+            view_ray.direction, light_direction, obj, intersection);
+        direct_light *= remaining_light_transfer * light_contribution;
 
-        auto [next_ray, transmission] = std::get<sphere>(obj).surface->scatter(
-            view_ray.direction, obj, intersection);
-        transmission *= std::abs(intersection.surface_normal.dot(next_ray.direction));
-        remaining_light_transfer = remaining_light_transfer * transmission;
+        auto [next_ray, transmission]
+            = surface_scatter(view_ray.direction, obj, intersection);
+        transmission
+            *= std::abs(intersection.surface_normal.dot(next_ray.direction));
+        remaining_light_transfer *= transmission;
 
         light += direct_light;
-
         view_ray = next_ray;
     }
 
@@ -429,7 +432,7 @@ vec3<unsigned char> rgb_light(vec3f light)
 vec3f supersample(const camera& view, const vec2i& resolution,
                   const scene& objects, vec2i pixel)
 {
-    constexpr auto supersampling{12};
+    constexpr auto supersampling{16};
 
     vec3f color{};
 
@@ -558,47 +561,20 @@ int main()
 
     // auto view = camera{{1, 5, 0}, vec3f{0.5918782901, -8.91237850058, 40}.normalized(), 0.000000001};
     auto view = camera{{1, 5, 0}, vec3f{-0.1, -0.1, 1}.normalized(), 30};
-
     auto objects = scene{
         {sphere{{-6, -5, 35}, 1, {0.6, 1, 0.8}, &matte}},
         {sphere{{3, -3.5, 40}, 2.5, {1, 0.2, 0.2}, &mirror}},
         {sphere{{-1, 2, 60}, 8, {.83, .686, .21}, &specular_conductor}},
-        {sphere{{-9, -2, 49}, 4., {.05, .6, .8}, &specular_dielectric}},
+        {sphere{{-6.5, 0, 42}, 5., {.05, .6, .8}, &specular_transmissive}},
+        {sphere{{-10, -4, 65}, 2, {1., .1, .1}, &matte}},
         {sphere{{-8, 6, 45}, 1, {1, 1, 1}, &matte}},
         {sphere{{0, -1000000006., 0}, 1000000000., {.85, .85, .95}, &matte}},
 
-        // {point_light{{0, 2000, 0}, {100000., 100000., 100000.}}},
-        {point_light{{-4, -4, 45}, {70., 60., 80.}}},
-        {point_light{{20, 15, 70}, {20., 20., 50.}}},
+        {point_light{{-14, 8, 70}, {210., 180., 240.}}},
+        {point_light{{-2, 8, 15}, {210., 180., 240.}}},
+        {point_light{{12, 8, 70}, {210., 180., 240.}}},
     };
 
     // text_output(view, objects);
     sfml_popup(view, objects);
 }
-
-// std::optional<intersection> intersect(const ray& r, const sphere& s)
-// {
-//     // R t = o + v*t;
-//     // (x - sx)² + (y - sy)² + (z - sz)² = r²;
-//     // b = o - s;
-//     // (bx + vx*t)² + (...) - r2 = 0;
-//     // (bx² + by² + bz² - r2)
-//     //    + 2t(bx·vx + by·vy + bz·vz)
-//     //    + (vx²t² + vy²t² + vz²t²);
-//     // t²(v·v) + 2t(b·v) + (b·b) - r² = 0
-//     auto r2 = s.radius * s.radius;
-//     auto v = r.direction;
-//     auto b = r.origin - s.center;
-//     // At² + Bt + C = 0
-//     auto A = v.dot(v);
-//     auto B = 2 * b.dot(v);
-//     auto C = b.dot(b) - r2;
-//     auto q = B * B - 4 * A * C;
-//     if (q < 0) return {};
-//     q = std::sqrt(q);
-//     auto t = (-B - q) / 2 * A;
-//     if (t < 0) return {};
-//     auto intersection_point = r.origin + r.direction * t;
-//     auto surface_normal = (intersection_point - s.center).normalized();
-//     return {{intersection_point, surface_normal, s.surface}};
-// }
