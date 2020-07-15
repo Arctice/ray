@@ -107,6 +107,7 @@ reflection mirror_scatter(const vec3f& view, const object& obj,
 }
 
 constexpr double dielectric_refraction = 1.52; // crown glass
+// constexpr double dielectric_refraction = 1.333; // wat
 
 double fresnel_dielectric(double cosθi, double ηi, double ηt)
 {
@@ -369,12 +370,15 @@ incident_light sample_direct_lighting(const intersection& p,
 
 vec3f trace(ray view_ray, const scene& scene)
 {
-    vec3f light = black;
-    auto remaining_light_transfer = vec3f{1, 1, 1};
+    auto depth{0};
+    auto rr_threshold = .1;
 
-    while (true) {
+    auto remaining_light_transfer = vec3f{1, 1, 1};
+    vec3f light = black;
+
+    while (++depth < 12) {
         auto found_intersection = intersect(view_ray, scene);
-        if (not found_intersection) return light;
+        if (not found_intersection) break;
         auto& [obj, intersection] = *found_intersection;
 
         auto [direct_light, light_direction]
@@ -392,6 +396,15 @@ vec3f trace(ray view_ray, const scene& scene)
 
         light += direct_light;
         view_ray = next_ray;
+
+        auto maxb = std::max(
+            remaining_light_transfer.x,
+            std::max(remaining_light_transfer.y, remaining_light_transfer.z));
+        if (maxb < rr_threshold) {
+            auto q = std::max(.1, 1. - maxb);
+            if (drand48() < q) break;
+            remaining_light_transfer /= 1. - q;
+        }
     }
 
     return light;
@@ -448,7 +461,7 @@ vec3<unsigned char> rgb_light(vec3f light)
 vec3f supersample(const camera& view, const vec2i& resolution,
                   const scene& objects, vec2i pixel)
 {
-    constexpr auto supersampling{16};
+    constexpr auto supersampling{12};
 
     vec3f color{};
 
@@ -465,7 +478,7 @@ vec3f supersample(const camera& view, const vec2i& resolution,
 
 void sfml_popup(camera view, scene scene)
 {
-    auto resolution = vec2i{900, 900};
+    auto resolution = vec2i{800, 800};
     // float scaling = 1;
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -575,8 +588,7 @@ int main()
     matte.reflect = matte_reflect;
     matte.scatter = matte_scatter;
 
-    // auto view = camera{{1, 5, 0}, vec3f{0.5918782901, -8.91237850058, 40}.normalized(), 0.000000001};
-    auto view = camera{{0, 3, 25}, vec3f{-.1, -0.2, 1}.normalized(), 60};
+    auto view = camera{{0, 3, 25}, vec3f{-.05, -0.2, 1}.normalized(), 60};
     auto objects = scene{
         {sphere{{-4.5, -4.8, 40}, 1.2, {0.42, 1, 0.18}, &matte}},
         {sphere{{3, -3.5, 39}, 2.5, {1, 0.08, 0.3}, &mirror}},
@@ -584,12 +596,16 @@ int main()
         {sphere{{-5, -3, 47}, 3., {.05, .6, .8}, &specular_fresnel}},
         {sphere{{-8.25, -4, 51}, 2, {1, .3, 0}, &matte}},
         {sphere{{-8, 6, 45}, 1, {1, 1, 1}, &matte}},
-        {sphere{{0, -1000000006., 0}, 1000000000., {.85, .85, .95}, &matte}},
+        {sphere{{0, -1000000006., 0}, 1000000000., {.9, .9, .9}, &matte}},
+        {sphere{{0, 0, 10000110}, 10000000., {.9, .9, .9}, &matte}},
+        {sphere{{0, 0, -10000000}, 10000000., {.9, .9, .9}, &matte}},
+        {sphere{{10000050, 0, 0}, 10000000., {.9, .9, .9}, &matte}},
+        {sphere{{-10000050, 0, 0}, 10000000., {.9, .9, .9}, &matte}},
+        {sphere{{0, 10000030, 0}, 10000000., {.9, .9, .9}, &matte}},
 
-        {point_light{{-14, 8, 70}, {2100., 1800., 2400.}}},
-        {point_light{{-2, 8, 15}, {2100., 1800., 2400.}}},
-        {point_light{{12, 8, 70}, {2100., 1800., 2400.}}},
-        {point_light{{-1, 20, 45}, {2100., 1800., 2400.}}},
+        {point_light{{-30, 10, 75}, {1000., 90, 1000.}}},
+        {point_light{{-2, 10, 12}, {90, 1000., 1000.}}},
+        {point_light{{25, 10, 75}, {1000., 1000., 90}}},
     };
 
     // text_output(view, objects);
