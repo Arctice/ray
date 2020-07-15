@@ -106,6 +106,8 @@ reflection mirror_scatter(const vec3f& view, const object& obj,
     return {reflected_ray, std::get<sphere>(obj).color};
 }
 
+constexpr double dielectric_refraction = 1.52; // crown glass
+
 double fresnel_dielectric(double cosθi, double ηi, double ηt)
 {
     // ηi and ηt are the incident and transmitted
@@ -137,7 +139,7 @@ reflection dielectric_scatter(const vec3f& view, const object& obj,
     // total energy transmitted = 1 - Fᵣ
 
     auto ηi = 1.;
-    auto ηt = 1.5;
+    auto ηt = dielectric_refraction;
     auto cosθi = reflection.dot(intersection.surface_normal);
     auto Fr = fresnel_dielectric(cosθi, ηi, ηt);
     Fr /= std::abs(cosθi);
@@ -193,7 +195,7 @@ reflection transmission_scatter(const vec3f& view, const object& obj,
     auto cosθ = (view * -1.).dot(intersection.surface_normal);
     bool entering = 0 < cosθ;
 
-    auto η = 1.55;
+    auto η = dielectric_refraction;
 
     auto ηi = entering ? 1.0 : η;
     auto ηt = entering ? η : 1.0;
@@ -219,11 +221,25 @@ reflection transmission_scatter(const vec3f& view, const object& obj,
     return {refracted_ray, light};
 }
 
+reflection fresnel_scatter(const vec3f& view, const object& obj,
+                           const intersection& intersection)
+{
+    auto cosθ = (view * -1.).dot(intersection.surface_normal);
+    auto ηi = 1.;
+    auto ηt = dielectric_refraction;
+    auto F = fresnel_dielectric(cosθ, ηi, ηt);
+    if (drand48() < F)
+        return dielectric_scatter(view, obj, intersection);
+    else
+        return transmission_scatter(view, obj, intersection);
+}
+
 material matte{matte_reflect, matte_scatter};
 material mirror{specular_reflect, mirror_scatter};
 material specular_dielectric{specular_reflect, dielectric_scatter};
 material specular_conductor{specular_reflect, conductor_scatter};
 material specular_transmissive{specular_reflect, transmission_scatter};
+material specular_fresnel{specular_reflect, fresnel_scatter};
 
 vec3f surface_reflect(const vec3f& view, const vec3f& light, const object& obj,
                       const intersection& intersection)
@@ -560,19 +576,20 @@ int main()
     matte.scatter = matte_scatter;
 
     // auto view = camera{{1, 5, 0}, vec3f{0.5918782901, -8.91237850058, 40}.normalized(), 0.000000001};
-    auto view = camera{{1, 5, 0}, vec3f{-0.1, -0.1, 1}.normalized(), 30};
+    auto view = camera{{0, 3, 25}, vec3f{-.1, -0.2, 1}.normalized(), 60};
     auto objects = scene{
-        {sphere{{-6, -5, 35}, 1, {0.6, 1, 0.8}, &matte}},
-        {sphere{{3, -3.5, 40}, 2.5, {1, 0.2, 0.2}, &mirror}},
+        {sphere{{-4.5, -4.8, 40}, 1.2, {0.42, 1, 0.18}, &matte}},
+        {sphere{{3, -3.5, 39}, 2.5, {1, 0.08, 0.3}, &mirror}},
         {sphere{{-1, 2, 60}, 8, {.83, .686, .21}, &specular_conductor}},
-        {sphere{{-6.5, 0, 42}, 5., {.05, .6, .8}, &specular_transmissive}},
-        {sphere{{-10, -4, 65}, 2, {1., .1, .1}, &matte}},
+        {sphere{{-5, -3, 47}, 3., {.05, .6, .8}, &specular_fresnel}},
+        {sphere{{-8.25, -4, 51}, 2, {1, .3, 0}, &matte}},
         {sphere{{-8, 6, 45}, 1, {1, 1, 1}, &matte}},
         {sphere{{0, -1000000006., 0}, 1000000000., {.85, .85, .95}, &matte}},
 
-        {point_light{{-14, 8, 70}, {210., 180., 240.}}},
-        {point_light{{-2, 8, 15}, {210., 180., 240.}}},
-        {point_light{{12, 8, 70}, {210., 180., 240.}}},
+        {point_light{{-14, 8, 70}, {2100., 1800., 2400.}}},
+        {point_light{{-2, 8, 15}, {2100., 1800., 2400.}}},
+        {point_light{{12, 8, 70}, {2100., 1800., 2400.}}},
+        {point_light{{-1, 20, 45}, {2100., 1800., 2400.}}},
     };
 
     // text_output(view, objects);
