@@ -102,8 +102,9 @@ reflection mirror_scatter(const vec3f& view, const object& obj,
 {
     auto reflection = reflect(view, intersection.surface_normal).normalized();
     auto reflected_ray = ray{intersection.p, reflection};
+    auto cosθ = reflection.dot(intersection.surface_normal);
 
-    return {reflected_ray, std::get<sphere>(obj).color};
+    return {reflected_ray, std::get<sphere>(obj).color / cosθ};
 }
 
 constexpr double dielectric_refraction = 1.52; // crown glass
@@ -410,16 +411,14 @@ vec3f trace(ray view_ray, const scene& scene)
     return light;
 }
 
-vec3f pixel_ray(camera view, vec2i resolution, vec2f pixel)
+vec3f lens_ray(camera view, vec2f coordinates)
 {
     // distance to imaginary frustrum
     // auto α = 1.;
     // half of the fov angle
     auto θ = view.fov * pi / 180.;
     // pixel angle size
-    auto px_θ = vec2f{θ / resolution.x, θ / resolution.y};
-    px_θ.x *= pixel.x;
-    px_θ.y *= -pixel.y;
+    auto px_θ = vec2f{θ * coordinates.x, -θ * coordinates.y};
 
     auto yaw = view.direction.z == 0
                    ? 90. * pi / 180.
@@ -441,6 +440,22 @@ vec3f pixel_ray(camera view, vec2i resolution, vec2f pixel)
     yaw += px_θ.x;
     ray = {ray.x * std::cos(-yaw) - ray.z * std::sin(-yaw), ray.y,
            ray.x * std::sin(-yaw) + ray.z * std::cos(-yaw)};
+
+    return ray;
+}
+
+vec3f perspective_ray(camera view, vec2f coords)
+{
+    auto A = lens_ray(view, {0, -.5});
+    auto B = lens_ray(view, {0, .5});
+    auto C = lens_ray(view, {-.5, 0});
+    auto D = lens_ray(view, {.5, 0});
+
+    auto xs = D - C;
+    auto ys = B - A;
+
+    auto px = xs * (coords.x) + ys * (coords.y);
+    auto ray = (view.direction + px).normalized();
 
     return ray;
 }
@@ -467,8 +482,8 @@ vec3f supersample(const camera& view, const vec2i& resolution,
 
     for (int sample{}; sample < supersampling; ++sample) {
         auto sample_offset = vec2f{drand48(), drand48()};
-        auto ray_direction =
-            pixel_ray(view, resolution, vec2f{pixel} + sample_offset);
+        auto ray_direction = perspective_ray(
+            view, (vec2f{pixel} + sample_offset) / vec2f{resolution});
         auto view_ray = ray{view.origin, ray_direction};
         color += trace(view_ray, objects);
     }
@@ -588,7 +603,7 @@ int main()
     matte.reflect = matte_reflect;
     matte.scatter = matte_scatter;
 
-    auto view = camera{{0, 3, 25}, vec3f{-.05, -0.2, 1}.normalized(), 60};
+    auto view = camera{{0, 3, 25}, vec3f{-.05, -0.2, 1}.normalized(), 72};
     auto objects = scene{
         {sphere{{-4.5, -4.8, 40}, 1.2, {0.42, 1, 0.18}, &matte}},
         {sphere{{3, -3.5, 39}, 2.5, {1, 0.08, 0.3}, &mirror}},

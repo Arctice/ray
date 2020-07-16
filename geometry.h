@@ -19,13 +19,13 @@ public:
     vec2 operator-(const vec2 &rhs) const;
     vec2 &operator-=(const vec2 &rhs);
 
-    template <typename V>
-    vec2 operator*(const V &rhs) const;
-    template <typename V>
-    vec2 &operator*=(const V &rhs);
+    template <typename V> vec2 operator*(const V& rhs) const;
+    template <typename V> vec2& operator*=(const V& rhs);
 
-    template <typename V>
-    vec2 operator*(const vec2<V> &rhs) const;
+    template <typename V> vec2 operator*(const vec2<V>& rhs) const;
+    template <typename V> vec2& operator*=(const vec2<V>& rhs);
+    template <typename V> vec2 operator/(const vec2<V>& rhs) const;
+    template <typename V> vec2& operator/=(const vec2<V>& rhs);
 
     bool operator==(const vec2 &rhs) const;
     bool operator!=(const vec2 &rhs) const;
@@ -105,9 +105,34 @@ vec2<T> &vec2<T>::operator*=(const V &rhs)
 
 template <typename T>
 template <typename V>
-vec2<T> vec2<T>::operator*(const vec2<V> &rhs) const
+vec2<T> vec2<T>::operator*(const vec2<V>& rhs) const
 {
     return vec2<T>(x * rhs.x, y * rhs.y);
+}
+
+template <typename T>
+template <typename V>
+vec2<T>& vec2<T>::operator*=(const vec2<V>& rhs)
+{
+    x *= rhs.x;
+    y *= rhs.y;
+    return *this;
+}
+
+template <typename T>
+template <typename V>
+vec2<T> vec2<T>::operator/(const vec2<V>& rhs) const
+{
+    return vec2<T>(x / rhs.x, y / rhs.y);
+}
+
+template <typename T>
+template <typename V>
+vec2<T>& vec2<T>::operator/=(const vec2<V>& rhs)
+{
+    x /= rhs.x;
+    y /= rhs.y;
+    return *this;
 }
 
 template <typename T>
