@@ -41,6 +41,7 @@ public:
     vec3<double> normalized() const;
 
     T dot(const vec3&) const;
+    vec3 cross(const vec3&) const;
 };
 
 using vec3f = vec3<double>;
@@ -58,6 +59,12 @@ template <typename T>
 T vec3<T>::dot(const vec3& rhs) const
 {
     return x * rhs.x + y * rhs.y + z * rhs.z;
+}
+
+template <typename T> vec3<T> vec3<T>::cross(const vec3& rhs) const
+{
+    return vec3{(y * rhs.z) - (z * rhs.y), (z * rhs.x) - (x * rhs.z),
+                (x * rhs.y) - (y * rhs.x)};
 }
 
 template <typename T> vec3<T> vec3<T>::operator-(const vec3<T>& rhs) const
