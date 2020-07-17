@@ -523,7 +523,7 @@ vec3<unsigned char> rgb_light(vec3f light)
 vec3f supersample(const camera& view, const vec2i& resolution,
                   const scene& objects, vec2i pixel)
 {
-    constexpr auto supersampling{12};
+    constexpr auto supersampling{4};
 
     vec3f color{};
 
@@ -540,7 +540,7 @@ vec3f supersample(const camera& view, const vec2i& resolution,
 
 void sfml_popup(camera view, scene scene)
 {
-    auto resolution = vec2i{800, 800};
+    auto resolution = vec2i{512, 512};
     // float scaling = 1;
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -645,33 +645,78 @@ void text_output(camera view, scene scene)
     fflush(stdout);
 }
 
+#include "tinyobjloader/tiny_obj_loader.h"
+
 int main()
 {
     matte.reflect = matte_reflect;
     matte.scatter = matte_scatter;
 
-    auto view = camera{{0, 3, 25}, vec3f{-.05, -0.2, 1}.normalized(), 72};
-    auto objects = scene{
-        {sphere{{-4.5, -4.8, 40}, 1.2, {0.42, 1, 0.18}, &matte}},
-        {sphere{{3, -3.5, 39}, 2.5, {1, 0.08, 0.3}, &mirror}},
-        {sphere{{-1, 2, 60}, 8, {.83, .686, .21}, &specular_conductor}},
-        {sphere{{-5, -3, 47}, 3., {.05, .6, .8}, &specular_fresnel}},
-        {sphere{{-8.25, -4, 51}, 2, {1, .3, 0}, &matte}},
-        {sphere{{-8, 6, 45}, 1, {1, 1, 1}, &matte}},
-        {triangle{{6, -2, 54}, {11, 1, 52}, {12, -6.2, 57}, {.4, .5, .6}}},
+    tinyobj::attrib_t attrib;
+    std::vector<tinyobj::shape_t> shapes;
+    std::vector<tinyobj::material_t> materials;
+    std::string warn;
+    std::string err;
 
-        {sphere{{0, -1000000006., 0}, 1000000000., {.9, .9, .9}, &matte}},
-        {sphere{{0, 0, 10000110}, 10000000., {.9, .9, .9}, &matte}},
-        {sphere{{0, 0, -10000000}, 10000000., {.9, .9, .9}, &matte}},
-        {sphere{{10000050, 0, 0}, 10000000., {.9, .9, .9}, &matte}},
-        {sphere{{-10000050, 0, 0}, 10000000., {.9, .9, .9}, &matte}},
-        {sphere{{0, 10000030, 0}, 10000000., {.9, .9, .9}, &matte}},
+    tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err,
+                     "./CornellBox-Original.obj", "", true);
 
-        {point_light{{-30, 10, 75}, {1000., 90, 1000.}}},
-        {point_light{{-2, 10, 12}, {90, 1000., 1000.}}},
-        {point_light{{25, 10, 75}, {1000., 1000., 90}}},
-    };
+    auto objects = scene{};
+
+    for (size_t i = 0; i < shapes.size(); i++) {
+        size_t index_offset = 0;
+        for (size_t f = 0; f < shapes[i].mesh.num_face_vertices.size(); f++) {
+            size_t fnum = shapes[i].mesh.num_face_vertices[f];
+            std::vector<vec3f> face;
+
+            for (size_t v = 0; v < fnum; v++) {
+                tinyobj::index_t idx = shapes[i].mesh.indices[index_offset + v];
+                auto k = idx.vertex_index * 3;
+                auto vx = vec3f{
+                    -attrib.vertices[k + 0],
+                    attrib.vertices[k + 1],
+                    attrib.vertices[k + 2],
+                };
+                face.push_back(vx);
+            }
+
+            auto& material = materials[shapes[i].mesh.material_ids[f]];
+            auto Ka = vec3f{material.ambient[0], material.ambient[1],
+                            material.ambient[2]};
+
+            objects.push_back({triangle{face[1], face[0], face[2], Ka}});
+
+            index_offset += fnum;
+        }
+    }
+
+    objects.push_back(
+        {point_light{{0, 1.8, 0}, vec3f{0.78, 0.78, 0.78} * 0.4}});
+    auto view = camera{{0, 1, 4}, vec3f{0, 0, -1}.normalized(), 40};
+    sfml_popup(view, objects);
+
+    // auto view = camera{{0, 3, 25}, vec3f{-.05, -0.2, 1}.normalized(), 72};
+    // auto objects = scene{
+    //     {sphere{{-4.5, -4.8, 40}, 1.2, {0.42, 1, 0.18}, &matte}},
+    //     {sphere{{3, -3.5, 39}, 2.5, {1, 0.08, 0.3}, &mirror}},
+    //     {sphere{{-1, 2, 60}, 8, {.83, .686, .21}, &specular_conductor}},
+    //     {sphere{{-5, -3, 47}, 3., {.05, .6, .8}, &specular_fresnel}},
+    //     {sphere{{-8.25, -4, 51}, 2, {1, .3, 0}, &matte}},
+    //     {sphere{{-8, 6, 45}, 1, {1, 1, 1}, &matte}},
+    //     {triangle{{6, -2, 54}, {11, 1, 52}, {12, -6.2, 57}, {.4, .5, .6}}},
+
+    //     {sphere{{0, -1000000006., 0}, 1000000000., {.9, .9, .9}, &matte}},
+    //     {sphere{{0, 0, 10000110}, 10000000., {.9, .9, .9}, &matte}},
+    //     {sphere{{0, 0, -10000000}, 10000000., {.9, .9, .9}, &matte}},
+    //     {sphere{{10000050, 0, 0}, 10000000., {.9, .9, .9}, &matte}},
+    //     {sphere{{-10000050, 0, 0}, 10000000., {.9, .9, .9}, &matte}},
+    //     {sphere{{0, 10000030, 0}, 10000000., {.9, .9, .9}, &matte}},
+
+    //     {point_light{{-30, 10, 75}, {1000., 90, 1000.}}},
+    //     {point_light{{-2, 10, 12}, {90, 1000., 1000.}}},
+    //     {point_light{{25, 10, 75}, {1000., 1000., 90}}},
+    // };
 
     // text_output(view, objects);
-    sfml_popup(view, objects);
+    // sfml_popup(view, objects);
 }
