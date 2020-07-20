@@ -35,10 +35,15 @@ struct point_light {
 };
 
 struct intersection;
+
 struct sphere;
 struct triangle;
 using object = std::variant<triangle, sphere, point_light>;
-using scene = std::vector<object>;
+
+struct scene{
+    std::vector<object> objects;
+    std::vector<object> lights;
+};
 
 struct reflection {
     ray reflected;
@@ -335,13 +340,13 @@ std::optional<intersection> intersect_object(const ray& ray, const object& obj)
 }
 
 std::optional<std::pair<const object&, intersection>>
-intersect(const ray& ray, const scene& objects)
+intersect(const ray& ray, const scene& scene)
 {
     auto nearest = std::numeric_limits<double>::max();
     std::optional<intersection> result{};
     const object* intersected_object{};
 
-    for (const auto& obj : objects) {
+    for (const auto& obj : scene.objects) {
         auto intersection = intersect_object(ray, obj);
         if (not intersection) continue;
 
@@ -365,24 +370,16 @@ struct incident_light {
     vec3f normal;
 };
 
-incident_light sample_direct_lighting(const intersection& p,
-                                      const scene& objects)
+incident_light sample_direct_lighting(const intersection& p, const scene& scene)
 {
     // select one light
-    auto light_count{0};
-    for (auto& obj : objects) {
-        light_count += std::visit(
-            [](auto& obj) {
-                return std::is_same_v<decltype(obj), const point_light&>;
-            },
-            obj);
-    }
+    auto light_count{scene.lights.size()};
     if (light_count == 0) return {black, {}};
 
     light_count = int(float(light_count) * drand48()) + 1;
 
     const object* one_light;
-    for (auto& obj : objects) {
+    for (auto& obj : scene.lights) {
         light_count -= std::visit(
             [](auto& obj) {
                 return std::is_same_v<decltype(obj), const point_light&>;
@@ -401,7 +398,7 @@ incident_light sample_direct_lighting(const intersection& p,
     auto shadow_ray = ray{p.p, towards_light.normalized()};
 
     // check visibility
-    auto visibility = intersect(shadow_ray, objects);
+    auto visibility = intersect(shadow_ray, scene);
     if (visibility) {
         auto& [_, intersection] = *visibility;
         auto intersection_distance = (intersection.p - p.p).length2();
@@ -540,7 +537,7 @@ vec3f supersample(const camera& view, const vec2i& resolution,
 
 void sfml_popup(camera view, scene scene)
 {
-    auto resolution = vec2i{512, 512};
+    auto resolution = vec2i{16, 16};
     // float scaling = 1;
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -548,11 +545,11 @@ void sfml_popup(camera view, scene scene)
     std::vector<unsigned char> out;
     out.resize(4 * resolution.y * resolution.x);
 
-    thread_pool pool;
-    std::atomic<int> done_count{};
+    // thread_pool pool;
+    // std::atomic<int> done_count{};
 
     for (int y(0); y < resolution.y; ++y) {
-        pool.enqueue_work([y, &done_count, &out, &view, &resolution, &scene]() {
+        // pool.enqueue_work([y, &done_count, &out, &view, &resolution, &scene]() {
             for (int x(0); x < resolution.x; ++x) {
                 auto pixel = supersample(view, resolution, scene,
                                          vec2i{x, y} - resolution * 0.5);
@@ -564,11 +561,11 @@ void sfml_popup(camera view, scene scene)
                 out[4 * (y * resolution.x + x) + 2] = b;
                 out[4 * (y * resolution.x + x) + 3] = 255;
             }
-            done_count++;
-        });
+            // done_count++;
+        // });
     }
 
-    while (done_count != resolution.y) {};
+    // while (done_count != resolution.y) {};
 
     std::cerr << (std::chrono::high_resolution_clock::now() - t0).count()
                      / 1000000.
@@ -645,13 +642,35 @@ void text_output(camera view, scene scene)
     fflush(stdout);
 }
 
-#include "tinyobjloader/tiny_obj_loader.h"
-
-int main()
+std::tuple<camera, scene> spheres()
 {
-    matte.reflect = matte_reflect;
-    matte.scatter = matte_scatter;
+    auto view = camera{{0, 3, 25}, vec3f{-.05, -0.2, 1}.normalized(), 72};
+    std::vector<object> objects{
+        {sphere{{-4.5, -4.8, 40}, 1.2, {0.42, 1, 0.18}, &matte}},
+        {sphere{{3, -3.5, 39}, 2.5, {1, 0.08, 0.3}, &mirror}},
+        {sphere{{-1, 2, 60}, 8, {.83, .686, .21}, &specular_conductor}},
+        {sphere{{-5, -3, 47}, 3., {.05, .6, .8}, &specular_fresnel}},
+        {sphere{{-8.25, -4, 51}, 2, {1, .3, 0}, &matte}},
+        {sphere{{-8, 6, 45}, 1, {1, 1, 1}, &matte}},
+        {triangle{{6, -2, 54}, {11, 1, 52}, {12, -6.2, 57}, {.4, .5, .6}}},
 
+        {sphere{{0, -1000000006., 0}, 1000000000., {.9, .9, .9}, &matte}},
+        {sphere{{0, 0, 10000110}, 10000000., {.9, .9, .9}, &matte}},
+        {sphere{{0, 0, -10000000}, 10000000., {.9, .9, .9}, &matte}},
+        {sphere{{10000050, 0, 0}, 10000000., {.9, .9, .9}, &matte}},
+        {sphere{{-10000050, 0, 0}, 10000000., {.9, .9, .9}, &matte}},
+        {sphere{{0, 10000030, 0}, 10000000., {.9, .9, .9}, &matte}}};
+    std::vector<object> lights{
+        {point_light{{-30, 10, 75}, {1000., 90, 1000.}}},
+        {point_light{{-2, 10, 12}, {90, 1000., 1000.}}},
+        {point_light{{25, 10, 75}, {1000., 1000., 90}}},
+    };
+
+    return {view, {objects, lights}};
+}
+
+#include "tinyobjloader/tiny_obj_loader.h"
+std::tuple<camera, scene> cornellbox(){
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
@@ -659,9 +678,9 @@ int main()
     std::string err;
 
     tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err,
-                     "./CornellBox-Original.obj", "", true);
+                     "scenes/CornellBox-Original.obj", "", true);
 
-    auto objects = scene{};
+    std::vector<object> objects{};
 
     for (size_t i = 0; i < shapes.size(); i++) {
         size_t index_offset = 0;
@@ -690,33 +709,65 @@ int main()
         }
     }
 
-    objects.push_back(
-        {point_light{{0, 1.8, 0}, vec3f{0.78, 0.78, 0.78} * 0.4}});
+    std::vector<object> lights{point_light{
+        {0, 1.8, 0}, vec3f{0.78, 0.78, 0.78} * vec3f{17, 12, 4} * 0.05}};
     auto view = camera{{0, 1, 4}, vec3f{0, 0, -1}.normalized(), 40};
-    sfml_popup(view, objects);
 
-    // auto view = camera{{0, 3, 25}, vec3f{-.05, -0.2, 1}.normalized(), 72};
-    // auto objects = scene{
-    //     {sphere{{-4.5, -4.8, 40}, 1.2, {0.42, 1, 0.18}, &matte}},
-    //     {sphere{{3, -3.5, 39}, 2.5, {1, 0.08, 0.3}, &mirror}},
-    //     {sphere{{-1, 2, 60}, 8, {.83, .686, .21}, &specular_conductor}},
-    //     {sphere{{-5, -3, 47}, 3., {.05, .6, .8}, &specular_fresnel}},
-    //     {sphere{{-8.25, -4, 51}, 2, {1, .3, 0}, &matte}},
-    //     {sphere{{-8, 6, 45}, 1, {1, 1, 1}, &matte}},
-    //     {triangle{{6, -2, 54}, {11, 1, 52}, {12, -6.2, 57}, {.4, .5, .6}}},
+    return {view, {objects, lights}};
+}
 
-    //     {sphere{{0, -1000000006., 0}, 1000000000., {.9, .9, .9}, &matte}},
-    //     {sphere{{0, 0, 10000110}, 10000000., {.9, .9, .9}, &matte}},
-    //     {sphere{{0, 0, -10000000}, 10000000., {.9, .9, .9}, &matte}},
-    //     {sphere{{10000050, 0, 0}, 10000000., {.9, .9, .9}, &matte}},
-    //     {sphere{{-10000050, 0, 0}, 10000000., {.9, .9, .9}, &matte}},
-    //     {sphere{{0, 10000030, 0}, 10000000., {.9, .9, .9}, &matte}},
 
-    //     {point_light{{-30, 10, 75}, {1000., 90, 1000.}}},
-    //     {point_light{{-2, 10, 12}, {90, 1000., 1000.}}},
-    //     {point_light{{25, 10, 75}, {1000., 1000., 90}}},
-    // };
+std::tuple<camera, scene> bunny(){
+    tinyobj::attrib_t attrib;
+    std::vector<tinyobj::shape_t> shapes;
+    std::vector<tinyobj::material_t> materials;
+    std::string warn;
+    std::string err;
+
+    tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err,
+                     "scenes/bunny.obj", "", true);
+
+    std::vector<object> objects{};
+
+    for (size_t i = 0; i < shapes.size(); i++) {
+        size_t index_offset = 0;
+        for (size_t f = 0; f < shapes[i].mesh.num_face_vertices.size(); f++) {
+            size_t fnum = shapes[i].mesh.num_face_vertices[f];
+            std::vector<vec3f> face;
+
+            for (size_t v = 0; v < fnum; v++) {
+                tinyobj::index_t idx = shapes[i].mesh.indices[index_offset + v];
+                auto k = idx.vertex_index * 3;
+                auto vx = vec3f{
+                    -attrib.vertices[k + 0],
+                    attrib.vertices[k + 1],
+                    attrib.vertices[k + 2],
+                };
+                face.push_back(vx);
+            }
+
+            objects.push_back({triangle{face[1], face[0], face[2]}});
+
+            index_offset += fnum;
+        }
+    }
+
+    std::vector<object> lights{point_light{{2, 2, 2}, {10, 10, 10}},
+                               point_light{{-2, 2, 2}, {10, 10, 10}}};
+    auto view = camera{{.2, .8, 5}, vec3f{0, 0, -1}.normalized(), 30};
+
+    return {view, {objects, lights}};
+}
+
+int main()
+{
+    matte.reflect = matte_reflect;
+    matte.scatter = matte_scatter;
+
+    // auto [view, objects] = spheres();
+    // auto [view, objects] = cornellbox();
+    auto [view, objects] = bunny();
 
     // text_output(view, objects);
-    // sfml_popup(view, objects);
+    sfml_popup(view, objects);
 }
