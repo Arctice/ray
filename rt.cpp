@@ -11,7 +11,7 @@
 
 #include <SFML/Window.hpp>
 #include <SFML/Graphics.hpp>
-
+#include "tinyobjloader/tiny_obj_loader.h"
 #include "lib/pool.hpp"
 
 const vec3f black = vec3f{};
@@ -27,7 +27,7 @@ struct camera {
 };
 
 struct ray {
-    vec3f origin, direction;
+    vec3f origin, direction, inverse_direction;
 
     vec3f distance(double t) const { return origin + direction * t; }
 };
@@ -41,11 +41,13 @@ struct intersection;
 
 struct sphere;
 struct triangle;
+struct BVH;
 using object = std::variant<triangle, sphere, point_light>;
 
 struct scene{
     std::vector<object> objects;
     std::vector<object> lights;
+    std::shared_ptr<BVH> bvh;
 };
 
 struct reflection {
@@ -292,24 +294,50 @@ struct bounding_box {
 
     bool intersect(const ray& ray) const
     {
-        vec3f inv_dir
-            = {1. / ray.direction.x, 1. / ray.direction.y, 1 / ray.direction.z};
-        auto near = (min - ray.origin) * inv_dir;
-        auto far = (max - ray.origin) * inv_dir;
+        const vec3f& inv_dir = ray.inverse_direction;
+        auto t0 = 0., t1 = 10.e10;
 
-        if (near.x > far.x) std::swap(near.x, far.x);
-        if (near.y > far.y) std::swap(near.y, far.y);
-        if (near.z > far.z) std::swap(near.z, far.z);
+        for (auto d{0}; d < 3; ++d) {
+            auto near = (min[d] - ray.origin[d]) * inv_dir[d];
+            auto far = (max[d] - ray.origin[d]) * inv_dir[d];
+            if (near > far) std::swap(near, far);
+            t0 = std::max(t0, near);
+            t1 = std::min(t1, far);
+            if (t0 > t1) return false;
+        }
 
-        auto t0 = std::max(0., std::max(near.x, std::max(near.x, near.y)));
-        auto t1 = std::min(far.x, std::min(far.x, far.y));
-
-        if (t0 > t1) return false;
         return true;
     }
+
+    bool intersect(const bounding_box& other)
+    {
+        return std::max(min.x, other.min.x) <= std::min(max.x, other.max.x)
+               && std::max(min.y, other.min.y) <= std::min(max.y, other.max.y)
+               && std::max(min.z, other.min.z) <= std::min(max.z, other.max.z);
+    }
+
+    bounding_box operator|(const bounding_box& other) const
+    {
+        return {vec3f{std::min(min.x, other.min.x),
+                      std::min(min.y, other.min.y),
+                      std::min(min.z, other.min.z)},
+                vec3f{
+                    std::max(max.x, other.max.x),
+                    std::max(max.y, other.max.y),
+                    std::max(max.z, other.max.z),
+                }};
+    }
+
+    vec3f centroid() const { return (max + min) / 2; };
 };
 
-bounding_box obj_bounds(const triangle& V)
+bounding_box point_bounds(const vec3f& a, const vec3f& b)
+{
+    return {{std::min(a.x, b.x), std::min(a.y, b.y), std::min(a.z, b.z)},
+            {std::max(a.x, b.x), std::max(a.y, b.y), std::max(a.z, b.z)}};
+}
+
+bounding_box object_bounds(const triangle& V)
 {
     vec3f min{std::min(std::min(V.A.x, V.B.x), V.C.x),
               std::min(std::min(V.A.y, V.B.y), V.C.y),
@@ -320,38 +348,45 @@ bounding_box obj_bounds(const triangle& V)
     return {min, max};
 }
 
-std::optional<intersection> intersect(const ray& R, const triangle& V)
+std::optional<intersection> intersect(const ray& ray, const triangle& V)
 {
-    auto bounds = obj_bounds(V);
-    if (!bounds.intersect(R)) return {};
+    auto bounds = object_bounds(V);
+    if (!bounds.intersect(ray)) return {};
 
     auto BA = V.B - V.A;
     auto CA = V.C - V.A;
     auto n = BA.cross(CA);
-    auto q = R.direction.cross(CA);
+    auto q = ray.direction.cross(CA);
     auto a = BA.dot(q);
-    if (n.dot(R.direction) >= 0 or std::abs(a) <= epsilon) return {};
+    if (n.dot(ray.direction) >= 0 or std::abs(a) <= epsilon) return {};
 
-    auto s = (R.origin - V.A) / a;
+    auto s = (ray.origin - V.A) / a;
     auto r = s.cross(BA);
 
-    auto b = vec3f{s.dot(q), r.dot(R.direction), 0};
+    auto b = vec3f{s.dot(q), r.dot(ray.direction), 0};
     b.z = 1.0 - b.x - b.y;
     if (b.x < 0. or b.y < 0. or b.z < 0.) return {};
 
     auto t = CA.dot(r);
     if (t < 0.) return {};
 
-    auto isect_p = R.distance(t);
+    auto isect_p = ray.distance(t);
     return {{isect_p, n.normalized(), V.surface}};
 }
 
-std::optional<intersection> intersect(const ray& r, const sphere& s)
+bounding_box object_bounds(const sphere& s)
+{
+    vec3f min{s.center - vec3f{s.radius}};
+    vec3f max{s.center + vec3f{s.radius}};
+    return {min, max};
+}
+
+std::optional<intersection> intersect(const ray& ray, const sphere& s)
 {
     auto r2 = s.radius * s.radius;
-    auto to_sphere = (s.center - r.origin);
-    auto projection = r.direction.dot(to_sphere);
-    auto cast = r.direction * projection;
+    auto to_sphere = (s.center - ray.origin);
+    auto projection = ray.direction.dot(to_sphere);
+    auto cast = ray.direction * projection;
     auto closest_to_sphere_sq = (to_sphere - cast).length2();
     if (projection < 0 or closest_to_sphere_sq >= r2) return {};
 
@@ -362,7 +397,7 @@ std::optional<intersection> intersect(const ray& r, const sphere& s)
         = projection - intersection_depth * (inside ? -2 : 1);
     if (intersection_distance < -10e-10) return {};
 
-    auto intersection_point = r.distance(intersection_distance);
+    auto intersection_point = ray.distance(intersection_distance);
     auto surface_normal
         = (intersection_point - s.center).normalized() * (inside ? -1 : 1);
     return {{intersection_point, surface_normal, s.surface}};
@@ -378,23 +413,138 @@ std::optional<intersection> intersect_object(const ray& ray, const object& obj)
     return std::visit([&ray](auto& obj) { return intersect(ray, obj); }, obj);
 }
 
+bounding_box object_bounds(const object& obj)
+{
+    return std::visit([](auto& obj) { return object_bounds(obj); }, obj);
+}
+
+struct BVH {
+    bounding_box bounds;
+    std::vector<object> overlap;
+    std::shared_ptr<BVH> a, b;
+};
+
+std::pair<bounding_box, bounding_box>
+partition_bounds(const std::vector<object>& objs)
+{
+    bounding_box all = {{10e10}, {-10e10}};
+    for (auto& obj : objs) { all = all | object_bounds(obj); }
+
+    auto size = vec3f{all.max.x - all.min.x, all.max.y - all.min.y,
+                      all.max.z - all.min.z};
+    auto best = std::max(size.x, std::max(size.y, size.z));
+
+    auto a = all;
+    auto b = all;
+    if (best == size.x) {
+        a.max.x -= size.x / 2;
+        b.min.x += size.x / 2;
+        return {a, b};
+    }
+    if (best == size.y) {
+        a.max.y -= size.y / 2;
+        b.min.y += size.y / 2;
+        return {a, b};
+    }
+    if (best == size.z) {
+        a.max.z -= size.z / 2;
+        b.min.z += size.z / 2;
+        return {a, b};
+    }
+
+    throw;
+}
+
+BVH build_bvh(const std::vector<object>& objs)
+{
+    BVH node;
+    std::vector<object> A;
+    std::vector<object> B;
+
+    auto [a, b] = partition_bounds(objs);
+    node.bounds = a | b;
+
+    if (objs.size() < 16) {
+        node.overlap = objs;
+        return node;
+    }
+
+    for (auto& obj : objs) {
+        bool in_a = a.intersect(object_bounds(obj));
+        bool in_b = b.intersect(object_bounds(obj));
+        if (in_a && in_b)
+            node.overlap.push_back(obj);
+        else if (in_a)
+            A.push_back(obj);
+        else
+            B.push_back(obj);
+    }
+
+    if (0 < A.size()) {
+        node.a = std::make_shared<BVH>();
+        *(node.a) = build_bvh(A);
+    }
+    if (0 < B.size()) {
+        node.b = std::make_shared<BVH>();
+        *(node.b) = build_bvh(B);
+    }
+
+    return node;
+}
+
+struct bvh_stats {
+    int depth{0};
+    int nodes{0};
+    int objs{0};
+};
+
+bvh_stats treestats(const BVH* node)
+{
+    if (node == nullptr) return {};
+    bvh_stats a, b;
+    a = treestats(&*node->a);
+    b = treestats(&*node->b);
+    a.depth = std::max(a.depth, b.depth) + 1;
+    a.nodes += b.nodes + 1;
+    a.objs += node->overlap.size() + b.objs;
+    return a;
+}
+
 std::optional<std::pair<const object&, intersection>>
-intersect(const ray& ray, const scene& scene)
+intersect(ray& ray, const scene& scene)
 {
     auto nearest = std::numeric_limits<double>::max();
+    ray.inverse_direction = vec3f{1. / ray.direction.x, 1. / ray.direction.y,
+                                  1 / ray.direction.z};
+
     std::optional<intersection> result{};
     const object* intersected_object{};
 
-    for (const auto& obj : scene.objects) {
-        auto intersection = intersect_object(ray, obj);
-        if (not intersection) continue;
+    std::queue<BVH*> node_queue;
+    node_queue.push(&*scene.bvh);
 
-        auto distance = (intersection->p - ray.origin).length();
-        if (nearest <= distance) continue;
+    while (!node_queue.empty()) {
+        auto next = node_queue.front();
+        node_queue.pop();
 
-        nearest = distance;
-        result = {intersection};
-        intersected_object = &obj;
+        if (!next->bounds.intersect(ray)) continue;
+
+        for (const auto& obj : next->overlap) {
+            auto intersection = intersect_object(ray, obj);
+            if (not intersection) continue;
+
+            auto distance = (intersection->p - ray.origin).length2();
+            if (nearest <= distance) {
+                continue;
+            }
+
+            nearest = distance;
+            result = {intersection};
+            intersected_object = &obj;
+        }
+
+        if (next->a) node_queue.push(&*next->a);
+        if (next->b) node_queue.push(&*next->b);
     }
 
     if (result)
@@ -584,11 +734,11 @@ void sfml_popup(camera view, scene scene)
     std::vector<unsigned char> out;
     out.resize(4 * resolution.y * resolution.x);
 
-    // thread_pool pool;
-    // std::atomic<int> done_count{};
+    thread_pool pool;
+    std::atomic<int> done_count{};
 
     for (int y(0); y < resolution.y; ++y) {
-        // pool.enqueue_work([y, &done_count, &out, &view, &resolution, &scene]() {
+        pool.enqueue_work([y, &done_count, &out, &view, &resolution, &scene]() {
             for (int x(0); x < resolution.x; ++x) {
                 auto pixel
                     = supersample(view, scene, vec2i{x, y} - resolution * 0.5);
@@ -600,11 +750,11 @@ void sfml_popup(camera view, scene scene)
                 out[4 * (y * resolution.x + x) + 2] = b;
                 out[4 * (y * resolution.x + x) + 3] = 255;
             }
-            // done_count++;
-        // });
+            done_count++;
+        });
     }
 
-    // while (done_count != resolution.y) {};
+    while (done_count != resolution.y) {};
 
     std::cerr << (std::chrono::high_resolution_clock::now() - t0).count()
                      / 1000000.
@@ -681,6 +831,7 @@ void text_output(camera view, scene scene)
     fflush(stdout);
 }
 
+
 std::tuple<camera, scene> spheres()
 {
     auto view = camera{{0, 3, 25}, vec3f{-.05, -0.2, 1}.normalized(), 72};
@@ -708,7 +859,6 @@ std::tuple<camera, scene> spheres()
     return {view, {objects, lights}};
 }
 
-#include "tinyobjloader/tiny_obj_loader.h"
 std::tuple<camera, scene> cornellbox(){
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
@@ -806,12 +956,23 @@ int main()
     matte.reflect = matte_reflect;
     matte.scatter = matte_scatter;
 
-    // auto [view, objects] = spheres();
-    // auto [view, objects] = cornellbox();
-    auto [view, objects] = bunny();
+    // auto [view, scene] = spheres();
+    // auto [view, scene] = cornellbox();
+    auto [view, scene] = bunny();
 
-    // text_output(view, objects);
-    view.supersampling = 1;
-    view.resolution = {32, 32};
-    sfml_popup(view, objects);
+    view.supersampling = 6;
+    view.resolution = {250, 250};
+
+    scene.bvh = std::make_shared<BVH>();
+    *scene.bvh = build_bvh(scene.objects);
+
+    auto stats = treestats(&*scene.bvh);
+    std::cerr << stats.depth << " d\n";
+    std::cerr << stats.nodes << " n\n";
+    std::cerr << scene.objects.size() << " objs, "
+              << (scene.objects.size() - stats.objs) << " missed\n";
+    std::cerr << scene.objects.size() / (float)stats.nodes << " avg\n";
+
+    // text_output(view, scene);
+    sfml_popup(view, scene);
 }

@@ -32,6 +32,15 @@ public:
 
     template <typename V> explicit operator vec3<V>() const;
 
+    inline T& operator[](size_t d)
+    {
+        return reinterpret_cast<double*>(this)[d];
+    }
+    inline const T& operator[](size_t d) const
+    {
+        return reinterpret_cast<const double*>(this)[d];
+    }
+
     T length2() const;
     double length() const;
 
