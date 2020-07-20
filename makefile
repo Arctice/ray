@@ -1,3 +1,5 @@
+tobjl:
+	cd tinyobjloader && mkdir -p build && cd build && cmake .. && make
 rt: rt.cpp
 	clang++ -std=c++17 -Ofast -march=native \
 	-Wall -Wpedantic \

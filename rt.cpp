@@ -21,6 +21,9 @@ struct camera {
     vec3f origin;
     vec3f direction;
     double fov;
+
+    vec2i resolution;
+    int supersampling;
 };
 
 struct ray {
@@ -284,8 +287,44 @@ reflection surface_scatter(const vec3f& view, const object& obj,
     return intersection.material->scatter(view, obj, intersection);
 }
 
+struct bounding_box {
+    vec3f min, max;
+
+    bool intersect(const ray& ray) const
+    {
+        vec3f inv_dir
+            = {1. / ray.direction.x, 1. / ray.direction.y, 1 / ray.direction.z};
+        auto near = (min - ray.origin) * inv_dir;
+        auto far = (max - ray.origin) * inv_dir;
+
+        if (near.x > far.x) std::swap(near.x, far.x);
+        if (near.y > far.y) std::swap(near.y, far.y);
+        if (near.z > far.z) std::swap(near.z, far.z);
+
+        auto t0 = std::max(0., std::max(near.x, std::max(near.x, near.y)));
+        auto t1 = std::min(far.x, std::min(far.x, far.y));
+
+        if (t0 > t1) return false;
+        return true;
+    }
+};
+
+bounding_box obj_bounds(const triangle& V)
+{
+    vec3f min{std::min(std::min(V.A.x, V.B.x), V.C.x),
+              std::min(std::min(V.A.y, V.B.y), V.C.y),
+              std::min(std::min(V.A.z, V.B.z), V.C.z)};
+    vec3f max{std::max(std::max(V.A.x, V.B.x), V.C.x),
+              std::max(std::max(V.A.y, V.B.y), V.C.y),
+              std::max(std::max(V.A.z, V.B.z), V.C.z)};
+    return {min, max};
+}
+
 std::optional<intersection> intersect(const ray& R, const triangle& V)
 {
+    auto bounds = obj_bounds(V);
+    if (!bounds.intersect(R)) return {};
+
     auto BA = V.B - V.A;
     auto CA = V.C - V.A;
     auto n = BA.cross(CA);
@@ -517,10 +556,10 @@ vec3<unsigned char> rgb_light(vec3f light)
     return vec3<unsigned char>(gamma_correction(light) * 255.);
 }
 
-vec3f supersample(const camera& view, const vec2i& resolution,
-                  const scene& objects, vec2i pixel)
+vec3f supersample(const camera& view, const scene& objects, vec2i pixel)
 {
-    constexpr auto supersampling{4};
+    auto supersampling{view.supersampling};
+    const auto& resolution = view.resolution;
 
     vec3f color{};
 
@@ -537,7 +576,7 @@ vec3f supersample(const camera& view, const vec2i& resolution,
 
 void sfml_popup(camera view, scene scene)
 {
-    auto resolution = vec2i{16, 16};
+    auto resolution = view.resolution;
     // float scaling = 1;
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -551,8 +590,8 @@ void sfml_popup(camera view, scene scene)
     for (int y(0); y < resolution.y; ++y) {
         // pool.enqueue_work([y, &done_count, &out, &view, &resolution, &scene]() {
             for (int x(0); x < resolution.x; ++x) {
-                auto pixel = supersample(view, resolution, scene,
-                                         vec2i{x, y} - resolution * 0.5);
+                auto pixel
+                    = supersample(view, scene, vec2i{x, y} - resolution * 0.5);
 
                 auto [r, g, b] = vec3<int>(rgb_light(pixel));
 
@@ -618,8 +657,8 @@ void text_output(camera view, scene scene)
 
     for (int y(0); y < resolution.y; ++y) {
         for (int x(0); x < resolution.x; ++x) {
-            auto pixel = supersample(view, resolution, scene,
-                                     vec2i{x, y} - resolution * 0.5);
+            auto pixel
+                = supersample(view, scene, vec2i{x, y} - resolution * 0.5);
 
             std::string c = " ";
             if (pixel.length() >= 0.99)
@@ -754,7 +793,10 @@ std::tuple<camera, scene> bunny(){
 
     std::vector<object> lights{point_light{{2, 2, 2}, {10, 10, 10}},
                                point_light{{-2, 2, 2}, {10, 10, 10}}};
-    auto view = camera{{.2, .8, 5}, vec3f{0, 0, -1}.normalized(), 30};
+    auto view = camera{{.2, .8, 2.5}, vec3f{0, 0, -1}.normalized(), 60};
+
+    objects.push_back({triangle{{2, 0, -2}, {-2, 0, -2}, {2, 0, 2}}});
+    objects.push_back({triangle{{-2, 0, -2}, {-2, 0, 2}, {2, 0, 2}}});
 
     return {view, {objects, lights}};
 }
@@ -769,5 +811,7 @@ int main()
     auto [view, objects] = bunny();
 
     // text_output(view, objects);
+    view.supersampling = 1;
+    view.resolution = {32, 32};
     sfml_popup(view, objects);
 }
