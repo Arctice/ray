@@ -963,6 +963,55 @@ std::tuple<camera, scene> bunny(){
     return {view, {objects, lights}};
 }
 
+std::tuple<camera, scene> dragon(){
+    tinyobj::attrib_t attrib;
+    std::vector<tinyobj::shape_t> shapes;
+    std::vector<tinyobj::material_t> materials;
+    std::string warn;
+    std::string err;
+
+    tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err,
+                     "scenes/dragon.obj", "", true);
+
+    std::vector<object> objects{};
+
+    for (size_t i = 0; i < shapes.size(); i++) {
+        size_t index_offset = 0;
+        for (size_t f = 0; f < shapes[i].mesh.num_face_vertices.size(); f++) {
+            size_t fnum = shapes[i].mesh.num_face_vertices[f];
+            std::vector<vec3f> face;
+
+            for (size_t v = 0; v < fnum; v++) {
+                tinyobj::index_t idx = shapes[i].mesh.indices[index_offset + v];
+                auto k = idx.vertex_index * 3;
+                auto vx = vec3f{
+                    attrib.vertices[k + 0],
+                    attrib.vertices[k + 1],
+                    attrib.vertices[k + 2],
+                };
+                face.push_back(vx);
+            }
+
+            objects.push_back(
+                {triangle{face[0], face[1], face[2], {.90, .15, .1}}});
+
+            index_offset += fnum;
+        }
+    }
+
+    std::vector<object> lights{
+        point_light{{-1, 0, 1}, vec3f{1, 1, 1} * 4},
+    };
+    auto view = camera{{-.65, -.2, -.26}, (vec3f{1.4, .4, .5}).normalized(), 100};
+
+    objects.push_back({triangle{
+        {10, -.28, -10}, {-10, -.28, -10}, {10, -.28, 10}, {1, 1, 1}}});
+    objects.push_back({triangle{
+        {-10, -.28, -10}, {-10, -.28, 10}, {10, -.28, 10}, {1, 1, 1}}});
+
+    return {view, {objects, lights}};
+}
+
 int main()
 {
     matte.reflect = matte_reflect;
