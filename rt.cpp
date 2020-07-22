@@ -328,6 +328,17 @@ struct bounding_box {
                 }};
     }
 
+    bounding_box operator|(const vec3f& rhs) const
+    {
+        return {vec3f{std::min(min.x, rhs.x), std::min(min.y, rhs.y),
+                      std::min(min.z, rhs.z)},
+                vec3f{
+                    std::max(max.x, rhs.x),
+                    std::max(max.y, rhs.y),
+                    std::max(max.z, rhs.z),
+                }};
+    }
+
     vec3f centroid() const { return (max + min) / 2; };
 };
 
@@ -424,35 +435,22 @@ struct BVH {
     std::shared_ptr<BVH> a, b;
 };
 
-std::pair<bounding_box, bounding_box>
-partition_bounds(const std::vector<object>& objs)
+std::pair<int, double>
+partition_dimension(const std::vector<object>& objs)
 {
     bounding_box all = {{10e10}, {-10e10}};
-    for (auto& obj : objs) { all = all | object_bounds(obj); }
+    for (auto& obj : objs) { all = all | object_bounds(obj).centroid(); }
 
     auto size = vec3f{all.max.x - all.min.x, all.max.y - all.min.y,
                       all.max.z - all.min.z};
     auto best = std::max(size.x, std::max(size.y, size.z));
 
-    auto a = all;
-    auto b = all;
-    if (best == size.x) {
-        a.max.x -= size.x / 2;
-        b.min.x += size.x / 2;
-        return {a, b};
-    }
-    if (best == size.y) {
-        a.max.y -= size.y / 2;
-        b.min.y += size.y / 2;
-        return {a, b};
-    }
-    if (best == size.z) {
-        a.max.z -= size.z / 2;
-        b.min.z += size.z / 2;
-        return {a, b};
-    }
-
-    throw;
+    if (best == size.x)
+        return {0, all.min.x + size.x / 2};
+    else if (best == size.y)
+        return {1, all.min.y + size.y / 2};
+    else
+        return {2, all.min.z + size.z / 2};
 }
 
 BVH build_bvh(const std::vector<object>& objs)
@@ -461,8 +459,9 @@ BVH build_bvh(const std::vector<object>& objs)
     std::vector<object> A;
     std::vector<object> B;
 
-    auto [a, b] = partition_bounds(objs);
-    node.bounds = a | b;
+    auto [dimension, cut] = partition_dimension(objs);
+    node.bounds = {{10e10}, {-10e10}};
+    for (auto& obj : objs) { node.bounds = node.bounds | object_bounds(obj); }
 
     if (objs.size() < 16) {
         node.overlap = objs;
@@ -470,11 +469,8 @@ BVH build_bvh(const std::vector<object>& objs)
     }
 
     for (auto& obj : objs) {
-        bool in_a = a.intersect(object_bounds(obj));
-        bool in_b = b.intersect(object_bounds(obj));
-        if (in_a && in_b)
-            node.overlap.push_back(obj);
-        else if (in_a)
+        bool above = object_bounds(obj).centroid()[dimension] < cut;
+        if (above)
             A.push_back(obj);
         else
             B.push_back(obj);
@@ -928,25 +924,41 @@ std::tuple<camera, scene> bunny(){
                 tinyobj::index_t idx = shapes[i].mesh.indices[index_offset + v];
                 auto k = idx.vertex_index * 3;
                 auto vx = vec3f{
-                    -attrib.vertices[k + 0],
+                    attrib.vertices[k + 0],
                     attrib.vertices[k + 1],
                     attrib.vertices[k + 2],
                 };
                 face.push_back(vx);
             }
 
-            objects.push_back({triangle{face[1], face[0], face[2]}});
+            objects.push_back(
+                {triangle{face[0], face[1], face[2], {.7, .7, .8}}});
 
             index_offset += fnum;
         }
     }
 
-    std::vector<object> lights{point_light{{2, 2, 2}, {10, 10, 10}},
-                               point_light{{-2, 2, 2}, {10, 10, 10}}};
-    auto view = camera{{.2, .8, 2.5}, vec3f{0, 0, -1}.normalized(), 60};
+    std::vector<object> lights{
+        point_light{{-1, 2.2, 2}, vec3f{1, 1, 1} * 6},
+    };
+    auto view = camera{{.8, 1.7, 2.1}, vec3f{-.39, -.35, -.7}.normalized(), 60};
 
-    objects.push_back({triangle{{2, 0, -2}, {-2, 0, -2}, {2, 0, 2}}});
-    objects.push_back({triangle{{-2, 0, -2}, {-2, 0, 2}, {2, 0, 2}}});
+    objects.push_back(
+        {triangle{{2, 0, -2}, {-2, 0, -2}, {2, 0, 2}, {0, 1, 1}}});
+    objects.push_back(
+        {triangle{{-2, 0, -2}, {-2, 0, 2}, {2, 0, 2}, {0, 1, 1}}});
+
+    objects.push_back(
+        {triangle{{2, 2, -2}, {-2, 0, -2}, {2, 0, -2}, {1, 1, 0}}});
+    objects.push_back(
+        {triangle{{2, 2, -2}, {-2, 2, -2}, {-2, 0, -2}, {1, 1, 0}}});
+
+    objects.push_back(
+        {triangle{{-2, 2, -2}, {-2, 0, 2}, {-2, 0, -2}, {1, 0.1, 1}}});
+    objects.push_back(
+        {triangle{{-2, 2, -2}, {-2, 2, 2}, {-2, 0, 2}, {1, 0.1, 1}}});
+
+    objects.push_back({sphere{{-.5, .22, .85}, .22, {.96, .06, .06}}});
 
     return {view, {objects, lights}};
 }
@@ -960,18 +972,11 @@ int main()
     // auto [view, scene] = cornellbox();
     auto [view, scene] = bunny();
 
-    view.supersampling = 6;
-    view.resolution = {250, 250};
+    view.supersampling = 24;
+    view.resolution = {800, 800};
 
     scene.bvh = std::make_shared<BVH>();
     *scene.bvh = build_bvh(scene.objects);
-
-    auto stats = treestats(&*scene.bvh);
-    std::cerr << stats.depth << " d\n";
-    std::cerr << stats.nodes << " n\n";
-    std::cerr << scene.objects.size() << " objs, "
-              << (scene.objects.size() - stats.objs) << " missed\n";
-    std::cerr << scene.objects.size() / (float)stats.nodes << " avg\n";
 
     // text_output(view, scene);
     sfml_popup(view, scene);
