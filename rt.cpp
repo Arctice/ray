@@ -1,4 +1,6 @@
+#include <memory>
 #include <vector>
+#include <queue>
 #include <iostream>
 #include <optional>
 #include <variant>
@@ -12,7 +14,6 @@
 #include <SFML/Window.hpp>
 #include <SFML/Graphics.hpp>
 #include "tinyobjloader/tiny_obj_loader.h"
-#include "lib/pool.hpp"
 
 const vec3f black = vec3f{};
 auto epsilon = 10e-10;
@@ -292,21 +293,19 @@ reflection surface_scatter(const vec3f& view, const object& obj,
 struct bounding_box {
     vec3f min, max;
 
-    bool intersect(const ray& ray) const
-    {
-        const vec3f& inv_dir = ray.inverse_direction;
+    bool intersect(const ray& ray) const {
         auto t0 = 0., t1 = 10.e10;
-
+        auto z = ray.origin * ray.inverse_direction;
         for (auto d{0}; d < 3; ++d) {
-            auto near = (min[d] - ray.origin[d]) * inv_dir[d];
-            auto far = (max[d] - ray.origin[d]) * inv_dir[d];
-            if (near > far) std::swap(near, far);
-            t0 = std::max(t0, near);
-            t1 = std::min(t1, far);
-            if (t0 > t1) return false;
+            auto a = min[d] * ray.inverse_direction[d] - z[d];
+            auto b = max[d] * ray.inverse_direction[d] - z[d];
+            if (a > b)
+                std::swap(a, b);
+            t0 = std::max(t0, a);
+            t1 = std::min(t1, b);
         }
 
-        return true;
+        return t0 <= t1;
     }
 
     bool intersect(const bounding_box& other)
@@ -730,27 +729,19 @@ void sfml_popup(camera view, scene scene)
     std::vector<unsigned char> out;
     out.resize(4 * resolution.y * resolution.x);
 
-    thread_pool pool;
-    std::atomic<int> done_count{};
-
-    for (int y(0); y < resolution.y; ++y) {
-        pool.enqueue_work([y, &done_count, &out, &view, &resolution, &scene]() {
-            for (int x(0); x < resolution.x; ++x) {
+    #pragma omp parallel for schedule(guided) collapse(2)
+    for (int y = 0; y < resolution.y; ++y) {
+            for (int x = 0; x < resolution.x; ++x) {
                 auto pixel
                     = supersample(view, scene, vec2i{x, y} - resolution * 0.5);
 
                 auto [r, g, b] = vec3<int>(rgb_light(pixel));
-
                 out[4 * (y * resolution.x + x)] = r;
                 out[4 * (y * resolution.x + x) + 1] = g;
                 out[4 * (y * resolution.x + x) + 2] = b;
                 out[4 * (y * resolution.x + x) + 3] = 255;
             }
-            done_count++;
-        });
     }
-
-    while (done_count != resolution.y) {};
 
     std::cerr << (std::chrono::high_resolution_clock::now() - t0).count()
                      / 1000000.
