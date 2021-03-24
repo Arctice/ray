@@ -1,20 +1,8 @@
-tobjl:
-	cd tinyobjloader && mkdir -p build && cd build && cmake .. && make
-rt: rt.cpp
-	clang++ -std=c++17 -Ofast -march=native -fopenmp -flto \
+rayt: rayt.cpp
+	clang++ -std=c++2a -O2 -ffast-math -march=native \
+	-g -fno-omit-frame-pointer \
 	-Wall -Wpedantic \
-	rt.cpp -o rt \
-	-pthread -latomic \
-	-lsfml-window -lsfml-graphics -lsfml-system \
-	-L./tinyobjloader/build/ -ltinyobjloader
-core: rt
-debug:
-	clang++ -std=c++17 -O1 -march=native \
-	-fsanitize=undefined,address -g -fno-omit-frame-pointer \
-	-Wall -Wpedantic \
-	rt.cpp -o rt \
-	-pthread -latomic \
-	-lsfml-window -lsfml-graphics -lsfml-system \
-	-L./tinyobjloader/build/ -ltinyobjloader
-run:
-	./rt
+	rayt.cpp -o rayt \
+	-pthread -latomic -fopenmp=libiomp5 -lomp5 \
+	-lsfml-window -lsfml-graphics -lsfml-system
+core: rayt

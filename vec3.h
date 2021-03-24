@@ -34,20 +34,19 @@ public:
 
     inline T& operator[](size_t d)
     {
-        return reinterpret_cast<double*>(this)[d];
+        return reinterpret_cast<T*>(this)[d];
     }
     inline const T& operator[](size_t d) const
     {
-        return reinterpret_cast<const double*>(this)[d];
+        return reinterpret_cast<const T*>(this)[d];
     }
 
     T length2() const;
-    double length() const;
+    T length() const;
 
-    template <typename T1 = T,
-              typename
-              = typename std::enable_if<std::is_same<T1, double>::value>::type>
-    vec3<double> normalized() const;
+    template <typename T1 = T, typename = typename std::enable_if<
+                                   std::is_floating_point<T1>::value>::type>
+    vec3<T> normalized() const;
 
     T dot(const vec3&) const;
     vec3 cross(const vec3&) const;
@@ -58,10 +57,10 @@ using vec3i = vec3<int>;
 
 template <typename T>
 template <typename T1, typename>
-vec3f vec3<T>::normalized() const
+vec3<T> vec3<T>::normalized() const
 {
-    double r = sqrt(this->length2());
-    return vec3f(x / r, y / r, z / r);
+    T r = sqrt(this->length2());
+    return vec3(x / r, y / r, z / r);
 }
 
 template <typename T>
@@ -198,7 +197,7 @@ template <typename T> T vec3<T>::length2() const {
     return x * x + y * y + z * z;
 }
 
-template <typename T> double vec3<T>::length() const
+template <typename T> T vec3<T>::length() const
 {
     return sqrt(this->length2());
 }

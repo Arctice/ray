@@ -39,13 +39,15 @@ public:
 
     template <typename T1 = T,
               typename = typename std::enable_if<
-                  std::is_same<T1, double>::value>::type>
-    vec2<double> normalized() const;
+                  std::is_floating_point<T1>::value>::type>
+    vec2 normalized() const;
+
+    T dot(const vec2&) const;
 
     template <typename T1 = T,
               typename = typename std::enable_if<
-                  std::is_same<T1, double>::value>::type>
-    vec2<double> rotated(double a) const;
+                  std::is_floating_point<T1>::value>::type>
+    vec2 rotated(double a) const;
 };
 
 using vec2f = vec2<double>;
@@ -54,15 +56,21 @@ using vec2i = vec2<int>;
 
 template <typename T>
 template <typename T1, typename>
-vec2f vec2<T>::normalized() const
+vec2<T> vec2<T>::normalized() const
 {
     double r = sqrt(this->euclid2());
     return vec2f(x / r, y / r);
 }
 
 template <typename T>
+T vec2<T>::dot(const vec2& rhs) const
+{
+    return x * rhs.x + y * rhs.y;
+}
+
+template <typename T>
 template <typename T1, typename>
-vec2f vec2<T>::rotated(const double a) const
+vec2<T> vec2<T>::rotated(const double a) const
 {
     return {x * cos(a) - y * sin(a), x * sin(a) + y * cos(a)};
 }
