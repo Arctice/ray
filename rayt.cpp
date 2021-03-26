@@ -14,16 +14,21 @@
 #include <SFML/Window.hpp>
 #include <SFML/Graphics.hpp>
 
-using vec2s = vec2<float>;
-using vec3s = vec3<float>;
-float frand48() { return (float)drand48(); };
+using Float = double;
+using vec2s = vec2<Float>;
+using vec3s = vec3<Float>;
 
-const vec3s black = vec3s{};
-auto epsilon = 7e-7f;
+Float rand48() { return (Float)drand48(); };
+
+const vec3s black{};
+template <class T> constexpr float epsilon_ = 7e-7;
+template <> constexpr double epsilon_<double> = 10e-10;
+constexpr Float epsilon = epsilon_<Float>;
 
 struct camera {
     vec3s origin;
     vec3s direction;
+    vec3s inverse_direction;
     vec2s world_size;
     vec2i resolution;
     int supersampling;
@@ -32,7 +37,7 @@ struct camera {
 struct ray {
     vec3s origin, direction, inverse_direction;
 
-    vec3s distance(double t) const { return origin + direction * t; }
+    vec3s distance(Float t) const { return origin + direction * t; }
 };
 
 struct point_light {
@@ -87,6 +92,11 @@ struct grid {
         auto at = v.y * size.z * size.x + v.x * size.z + v.z;
         return cells[at];
     }
+
+    bool inbounds(vec3i v) const {
+        return v.x >= 0 and v.y >= 0 and v.z >= 0 and v.x < size.x and
+               v.z < size.y and v.y < size.z;
+    }
 };
 
 struct scene {
@@ -115,7 +125,7 @@ vec3s surface_color(const object& obj) {
 
 vec3s random_direction() {
     while (true) {
-        auto v = vec3s{frand48(), frand48(), frand48()} * 2 - vec3s{1, 1, 1};
+        auto v = vec3s{rand48(), rand48(), rand48()} * 2 - vec3s{1, 1, 1};
         if (v.length2() < 1)
             return v;
     }
@@ -153,10 +163,10 @@ reflection mirror_scatter(const vec3s& view, const object& obj,
     return {reflected_ray, surface_color(obj) / cosθ};
 }
 
-constexpr double dielectric_refraction = 1.52; // crown glass
-// constexpr double dielectric_refraction = 1.333; // wat
+constexpr Float dielectric_refraction = 1.52; // crown glass
+// constexpr Float dielectric_refraction = 1.333; // wat
 
-double fresnel_dielectric(double cosθi, double ηi, double ηt) {
+Float fresnel_dielectric(Float cosθi, Float ηi, Float ηt) {
     // ηi and ηt are the incident and transmitted
     // indices of medium refraction
     auto sinθi = std::sqrt(1.0 - cosθi * cosθi);
@@ -210,8 +220,8 @@ reflection conductor_scatter(const vec3s& view, const object& obj,
     vec3s η = ηt / ηi;
     vec3s ηk = k / ηi;
 
-    double cos2θ = cosθ * cosθ;
-    double sin2θ = 1. - cosθ;
+    Float cos2θ = cosθ * cosθ;
+    Float sin2θ = 1. - cosθ;
 
     vec3s η2 = η * η;
     vec3s ηk2 = ηk * ηk;
@@ -219,7 +229,7 @@ reflection conductor_scatter(const vec3s& view, const object& obj,
     vec3s t0 = η2 - ηk2 - sin2θ;
     vec3s a2plusb2 = sqrt(t0 * t0 + η2 * ηk2 * 4);
     vec3s t1 = a2plusb2 + cos2θ;
-    vec3s a = sqrt((a2plusb2 + t0) * 0.5f);
+    vec3s a = sqrt((a2plusb2 + t0) * 0.5);
     vec3s t2 = a * (2. * cosθ);
 
     vec3s rs = (t1 - t2) / (t1 + t2);
@@ -271,7 +281,7 @@ reflection fresnel_scatter(const vec3s& view, const object& obj,
     auto ηi = 1.;
     auto ηt = dielectric_refraction;
     auto F = fresnel_dielectric(cosθ, ηi, ηt);
-    if (frand48() < F)
+    if (rand48() < F)
         return dielectric_scatter(view, obj, intersection);
     else
         return transmission_scatter(view, obj, intersection);
@@ -334,7 +344,8 @@ std::optional<intersection> intersect_floor(const ray& ray, const cell& S) {
     auto cast = hit - vec3s{tile};
     if (t <= epsilon || cast.x < 0 || cast.x > 1 || cast.z < 0 || cast.z > 1)
         return {};
-    return {{hit, {0, ray.origin.y > tile.y ? 1.f : -1.f, 0}, S.surface}};
+    Float sign = ray.origin.y > tile.y ? 1. : -1.;
+    return {{hit, {0, sign, 0}, S.surface}};
 }
 
 std::optional<intersection> intersect(const ray& ray, const cell& S) {
@@ -358,7 +369,7 @@ struct bounding_box {
     vec3s min, max;
 
     bool intersect(const ray& ray) const {
-        auto t0 = 0.f, t1 = 10.e10f;
+        Float t0 = 0., t1 = 10.e10;
         auto z = ray.origin * ray.inverse_direction;
         for (auto d{0}; d < 3; ++d) {
             auto a = min[d] * ray.inverse_direction[d] - z[d];
@@ -418,67 +429,72 @@ bounding_box object_bounds(const triangle& V) {
 }
 
 std::optional<std::pair<const object&, intersection>>
-intersect(ray& ray, const scene& scene) {
-    ray.inverse_direction = vec3s{1.f / ray.direction.x, 1.f / ray.direction.y,
-                                  1.f / ray.direction.z};
-
+intersect_brute(ray& ray, const scene& scene) {
+    ray.inverse_direction = vec3s{1} / ray.direction;
     std::optional<intersection> result{};
     const object* intersected_object{};
-
-    auto bounds = bounding_box{{0.f}, vec3s{scene.grid.size}};
-    auto speculated{ray};
-    auto steps = speculated.inverse_direction;
-    float t{};
-
-    // auto offset_x = (speculated.origin.x - std::floor(speculated.origin.x));
-    // offset_x = (ray.direction.x < 0) ? 1.f - offset_x : offset_x;
-
-    auto next_x = 1.f - (speculated.origin.x - std::floor(speculated.origin.x));
-    // next_x = (ray.direction.x < 0) ? 1.f - next_x : next_x;
-    next_x *= steps.x;
-
-    auto next_z = 1.f - (speculated.origin.z - std::floor(speculated.origin.z));
-    // next_z = (ray.direction.z < 0) ? 1.f - next_z : next_z;
-    next_z *= steps.z;
-
-    auto next_y = 1.f - (speculated.origin.y - std::floor(speculated.origin.y));
-    // next_y = (ray.direction.y < 0) ? 1.f - next_y : next_y;
-    next_y *= steps.y;
-
-    while (bounds.intersect(speculated)) {
-        while (next_x <= 0.f)
-            next_x += std::abs(steps.x);
-        while (next_z <= 0.f)
-            next_z += std::abs(steps.z);
-        while (next_y <= 0.f)
-            next_y += std::abs(steps.y);
-
-        auto delta_t = std::min(std::min(next_x, next_z), next_y);
-        t += delta_t + epsilon;
-
-        next_x -= delta_t;
-        next_z -= delta_t;
-        next_y -= delta_t;
-
-        speculated.origin = ray.origin + ray.direction * t;
-
-        auto at = vec3i{speculated.origin};
-        if (!bounds.intersect(point_bounds(vec3s{at}, vec3s{at})))
+    auto nearest = std::numeric_limits<Float>::max();
+    for (const auto& obj : scene.grid.cells) {
+        auto intersection = intersect_object(ray, obj);
+        if (not intersection)
             continue;
-        auto& cell = scene.grid[at];
-        auto intersection = intersect_object(ray, cell);
-        if (intersection) {
-            result = {intersection};
-            intersected_object = &cell;
-            break;
-        }
+        auto distance = (intersection->p - ray.origin).length2();
+        if (nearest <= distance)
+            continue;
+        nearest = distance;
+        result = {intersection};
+        intersected_object = &obj;
     }
-
     if (result)
         return {std::pair<const object&, intersection>{*intersected_object,
                                                        *result}};
-    else
+    return {};
+}
+
+
+std::optional<std::pair<const object&, intersection>>
+intersect(ray& ray, const scene& scene) {
+    auto bounds = bounding_box{{0.}, vec3s{scene.grid.size}};
+    if (!bounds.intersect(ray))
         return {};
+
+    auto adv = vec3s{std::abs(ray.inverse_direction.x),
+                     std::abs(ray.inverse_direction.y),
+                     std::abs(ray.inverse_direction.z)};
+
+    vec3s base{};
+    for (auto d{0}; d < 3; ++d)
+        base[d] = ray.direction[d] < 0 ? std::floor(ray.origin[d])
+                                       : std::ceil(ray.origin[d]);
+    base = (base - ray.origin) * ray.inverse_direction;
+
+    vec3s t{base};
+    vec3i steps{};
+
+    auto speculated{ray};
+    while (!scene.grid.inbounds(vec3i{speculated.origin})) {
+        auto prev_t = std::min(std::min(t.x, t.z), t.y);
+        speculated.origin = ray.distance(prev_t + epsilon);
+        for (auto d{0}; d < 3; ++d)
+            while (t[d] <= prev_t)
+                t[d] = ++steps[d] * adv[d] + base[d];
+    }
+
+    while (scene.grid.inbounds(vec3i{speculated.origin})) {
+        auto& obj = scene.grid[vec3i{speculated.origin}];
+        auto hit = intersect(ray, std::get<cell>(obj));
+        if (hit)
+            return {{obj, *hit}};
+
+        auto prev_t = std::min(std::min(t.x, t.z), t.y);
+        speculated.origin = ray.distance(prev_t + epsilon);
+
+        for (auto d{0}; d < 3; ++d)
+            while (t[d] <= prev_t)
+                t[d] = ++steps[d] * adv[d] + base[d];
+    }
+
+    return {};
 }
 
 struct incident_light {
@@ -493,7 +509,7 @@ incident_light sample_direct_lighting(const intersection& p,
     if (light_count == 0)
         return {black, {}};
 
-    light_count = int(float(light_count) * frand48()) + 1;
+    light_count = int(float(light_count) * rand48()) + 1;
 
     const object* one_light;
     for (auto& obj : scene.lights) {
@@ -513,6 +529,7 @@ incident_light sample_direct_lighting(const intersection& p,
     // cast shadow ray
     auto towards_light = light_source.position - p.p;
     auto shadow_ray = ray{p.p, towards_light.normalized()};
+    shadow_ray.inverse_direction = vec3s{1} / shadow_ray.direction;
 
     // check visibility
     auto visibility = intersect(shadow_ray, scene);
@@ -535,9 +552,9 @@ vec3s trace(ray view_ray, const scene& scene) {
     auto depth{0};
     auto rr_threshold = .1;
 
-    auto remaining_light_transfer = vec3s{1, 1, 1};
+    auto remaining_light_transfer = vec3s{1};
     vec3s light = black;
-    const vec3s ambient = vec3s{.1, .1, .1};
+    const vec3s ambient = vec3s{.12};
 
     while (++depth < 12) {
         auto found_intersection = intersect(view_ray, scene);
@@ -553,6 +570,7 @@ vec3s trace(ray view_ray, const scene& scene) {
         auto light_contribution = surface_reflect(
             view_ray.direction, light_direction, obj, intersection);
         direct_light *= remaining_light_transfer * light_contribution;
+        light += direct_light;
 
         auto [next_ray, transmission] =
             surface_scatter(view_ray.direction, obj, intersection);
@@ -560,18 +578,19 @@ vec3s trace(ray view_ray, const scene& scene) {
             std::abs(intersection.surface_normal.dot(next_ray.direction));
         remaining_light_transfer *= transmission;
 
-        light += direct_light;
-        view_ray = next_ray;
-
+        // roulette halt
         auto maxb = std::max(
             remaining_light_transfer.x,
             std::max(remaining_light_transfer.y, remaining_light_transfer.z));
         if (maxb < rr_threshold) {
             auto q = std::max(.1, 1. - maxb);
-            if (frand48() < q)
+            if (rand48() < q)
                 break;
             remaining_light_transfer /= 1. - q;
         }
+
+        view_ray = next_ray;
+        view_ray.inverse_direction = vec3s{1} / view_ray.direction;
     }
 
     return light;
@@ -581,15 +600,15 @@ ray orthogonal_ray(camera view, vec2s coordinates) {
     auto plane_a = view.direction.cross({0, 1, 0}).normalized();
     auto plane_b = view.direction.cross(plane_a).normalized();
     auto offset = coordinates * view.world_size;
-    return {view.origin + plane_a * offset.x + plane_b * offset.y,
-            view.direction};
+    return {view.origin - plane_a * offset.x + plane_b * offset.y,
+            view.direction, view.inverse_direction};
 }
 
 vec3s supersample(const camera& view, const scene& objects, vec2i pixel) {
     auto color{black};
 
     for (int sample{}; sample < view.supersampling; ++sample) {
-        auto sample_offset = vec2s{frand48(), frand48()};
+        auto sample_offset = vec2s{rand48(), rand48()};
         auto ray = orthogonal_ray(view, (vec2s{pixel} + sample_offset) /
                                             vec2s{view.resolution});
         color += trace(ray, objects);
@@ -599,12 +618,13 @@ vec3s supersample(const camera& view, const scene& objects, vec2i pixel) {
 }
 
 vec3s gamma_correction(vec3s light) {
-    return {std::pow(light.x, 1.f / 2.2f), std::pow(light.y, 1.f / 2.2f),
-            std::pow(light.z, 1.f / 2.2f)};
+    return {(Float)std::pow(light.x, 1. / 2.2),
+            (Float)std::pow(light.y, 1. / 2.2),
+            (Float)std::pow(light.z, 1. / 2.2)};
 }
 
 vec3<unsigned char> rgb_light(vec3s light) {
-    auto clamp = [](auto c) { return std::min(1.f, std::max(0.f, c)); };
+    auto clamp = [](auto c) { return std::clamp<Float>(c, 0, 1); };
     light = {clamp(light.x), clamp(light.y), clamp(light.z)};
     return vec3<unsigned char>(gamma_correction(light) * 255.);
 }
@@ -616,7 +636,7 @@ void img_draw(camera view, scene scene) {
     std::vector<unsigned char> out{};
     out.resize(4 * resolution.y * resolution.x);
 
-    // #pragma omp parallel for schedule(guided) collapse(2)
+// #pragma omp parallel for schedule(monotonic:dynamic)
     for (int y = 0; y < resolution.y; ++y) {
         for (int x = 0; x < resolution.x; ++x) {
             auto pixel =
@@ -646,32 +666,29 @@ int main() {
                 .count());
     srand48(0);
 
-    grid tiles{{6}};
+    grid tiles{{8}};
     for (int x{0}; x < tiles.size.x; ++x) {
         for (int y{0}; y < tiles.size.x; ++y) {
             for (int z{0}; z < tiles.size.z; ++z) {
-                // if (drand48() <
-                    // std::sqrt(1.f - (float)(tiles.size.y - y) / tiles.size.y))
-                    // continue;
                 auto pos = vec3i{x, y, z};
-                auto color = vec3s{frand48(), frand48(), frand48()}.normalized();
+                auto color = vec3s{rand48(), rand48(), rand48()}.normalized();
                 auto material = &matte;
-                if (drand48() < 0.5)
-                    material = &matte;
                 tiles[pos] = cell{pos, color, material};
             }
         }
     }
 
-    auto direction = vec3s{.95, -.5, .55}.normalized();
+    auto direction = vec3s{.95, -.4, .55}.normalized();
     auto origin = direction * -tiles.size.x + vec3s{tiles.size / 2};
     std::vector<object> lights = {
         point_light{vec3s{-1, 2, -2}.normalized() * 20, 500}};
+
     img_draw(
         camera{.origin = origin,
                .direction = direction,
+               .inverse_direction = vec3s{1} / direction,
                .world_size = vec2s{vec2i{tiles.size.x, tiles.size.y}} * 1.5,
-               .resolution = {900, 900},
-               .supersampling = 4},
+               .resolution = {800, 800},
+               .supersampling = 3},
         {lights, {}, tiles});
 }
