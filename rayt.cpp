@@ -18,7 +18,10 @@ using Float = double;
 using vec2s = vec2<Float>;
 using vec3s = vec3<Float>;
 
-Float rand48() { return (Float)drand48(); };
+Float random_uniform() {
+    thread_local static unsigned short int xsubi[3];
+    return erand48(xsubi);
+}
 
 const vec3s black{};
 template <class T> constexpr float epsilon_ = 7e-7;
@@ -125,7 +128,9 @@ vec3s surface_color(const object& obj) {
 
 vec3s random_direction() {
     while (true) {
-        auto v = vec3s{rand48(), rand48(), rand48()} * 2 - vec3s{1, 1, 1};
+        auto v =
+            vec3s{random_uniform(), random_uniform(), random_uniform()} * 2 -
+            vec3s{1, 1, 1};
         if (v.length2() < 1)
             return v;
     }
@@ -281,7 +286,7 @@ reflection fresnel_scatter(const vec3s& view, const object& obj,
     auto ηi = 1.;
     auto ηt = dielectric_refraction;
     auto F = fresnel_dielectric(cosθ, ηi, ηt);
-    if (rand48() < F)
+    if (random_uniform() < F)
         return dielectric_scatter(view, obj, intersection);
     else
         return transmission_scatter(view, obj, intersection);
@@ -451,7 +456,6 @@ intersect_brute(ray& ray, const scene& scene) {
     return {};
 }
 
-
 std::optional<std::pair<const object&, intersection>>
 intersect(ray& ray, const scene& scene) {
     auto bounds = bounding_box{{0.}, vec3s{scene.grid.size}};
@@ -509,7 +513,7 @@ incident_light sample_direct_lighting(const intersection& p,
     if (light_count == 0)
         return {black, {}};
 
-    light_count = int(float(light_count) * rand48()) + 1;
+    light_count = int(float(light_count) * random_uniform()) + 1;
 
     const object* one_light;
     for (auto& obj : scene.lights) {
@@ -584,7 +588,7 @@ vec3s trace(ray view_ray, const scene& scene) {
             std::max(remaining_light_transfer.y, remaining_light_transfer.z));
         if (maxb < rr_threshold) {
             auto q = std::max(.1, 1. - maxb);
-            if (rand48() < q)
+            if (random_uniform() < q)
                 break;
             remaining_light_transfer /= 1. - q;
         }
@@ -608,7 +612,7 @@ vec3s supersample(const camera& view, const scene& objects, vec2i pixel) {
     auto color{black};
 
     for (int sample{}; sample < view.supersampling; ++sample) {
-        auto sample_offset = vec2s{rand48(), rand48()};
+        auto sample_offset = vec2s{random_uniform(), random_uniform()};
         auto ray = orthogonal_ray(view, (vec2s{pixel} + sample_offset) /
                                             vec2s{view.resolution});
         color += trace(ray, objects);
@@ -636,7 +640,7 @@ void img_draw(camera view, scene scene) {
     std::vector<unsigned char> out{};
     out.resize(4 * resolution.y * resolution.x);
 
-// #pragma omp parallel for schedule(monotonic:dynamic)
+// #pragma omp parallel for schedule(monotonic : dynamic)
     for (int y = 0; y < resolution.y; ++y) {
         for (int x = 0; x < resolution.x; ++x) {
             auto pixel =
@@ -671,7 +675,9 @@ int main() {
         for (int y{0}; y < tiles.size.x; ++y) {
             for (int z{0}; z < tiles.size.z; ++z) {
                 auto pos = vec3i{x, y, z};
-                auto color = vec3s{rand48(), rand48(), rand48()}.normalized();
+                auto color =
+                    vec3s{random_uniform(), random_uniform(), random_uniform()}
+                        .normalized();
                 auto material = &matte;
                 tiles[pos] = cell{pos, color, material};
             }
